@@ -165,10 +165,20 @@ class ServerManager extends EventEmitter {
         if (currentServer) {
           currentServer.status = code === 0 ? 'stopped' : 'error';
           currentServer.pid = null;
+          currentServer.cpu = null;
+          currentServer.memory = null;
           currentServer.error = code !== 0 ? `Process exited with code ${code}` : null;
           this.emit('server-status-changed', { ...currentServer });
         }
         this.processes.delete(serverId);
+        
+        // 리소스 모니터링 정리
+        const intervalId = `monitor_${serverId}`;
+        if (this[intervalId]) {
+          clearInterval(this[intervalId]);
+          delete this[intervalId];
+        }
+        
         if (code !== 0) {
           this.addLog(serverId, 'error', `Process exited with code ${code}`);
         }
@@ -301,11 +311,16 @@ class ServerManager extends EventEmitter {
     this.emit('log-update', serverId, logEntry);
   }
 
-  calculateUptime(startTime) {
+  calculateUptime(startTime, includeSeconds = false) {
     if (!startTime) return '-';
     const diff = Date.now() - new Date(startTime).getTime();
     const hours = Math.floor(diff / 3600000);
     const minutes = Math.floor((diff % 3600000) / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    
+    if (includeSeconds) {
+      return `${hours}h ${minutes}m ${seconds}s`;
+    }
     return `${hours}h ${minutes}m`;
   }
 
@@ -341,28 +356,64 @@ class ServerManager extends EventEmitter {
     // 이전 모니터링이 있다면 중지
     if (this[intervalId]) clearInterval(this[intervalId]);
 
+    // 초기 리소스 정보 설정
+    const server = this.servers.get(serverId);
+    if (server) {
+      server.cpu = '0.0';
+      server.memory = '0';
+      this.emit('server-status-changed', { ...server });
+    }
+
     this[intervalId] = setInterval(async () => {
-      const server = this.servers.get(serverId);
+      const currentServer = this.servers.get(serverId);
       const processInfo = this.processes.get(serverId);
 
-      if (!server || !processInfo || server.status !== 'running') {
+      if (!currentServer || !processInfo || currentServer.status !== 'running') {
         clearInterval(this[intervalId]);
+        delete this[intervalId];
         return;
       }
 
       try {
         const processes = await psList();
+        
+        // 메인 프로세스 찾기
         const mainProcess = processes.find(p => p.pid === processInfo.pid);
-
+        
         if (mainProcess) {
-          server.cpu = mainProcess.cpu.toFixed(1);
-          server.memory = (mainProcess.memory / 1024).toFixed(0); // MB
-          this.emit('server-status-changed', { ...server });
+          // 메인 프로세스가 있으면 자식 프로세스들도 찾기
+          const childProcesses = processes.filter(p => p.ppid === processInfo.pid);
+          const allRelatedProcesses = [mainProcess, ...childProcesses];
+          
+          // 모든 관련 프로세스의 리소스 사용량 합계
+          const totalCpu = allRelatedProcesses.reduce((sum, p) => sum + (p.cpu || 0), 0);
+          const totalMemory = allRelatedProcesses.reduce((sum, p) => sum + (p.memory || 0), 0);
+
+          // ps-list의 memory는 이미 MB 단위임
+          const memoryInMB = Math.round(totalMemory);
+
+          currentServer.cpu = Math.min(totalCpu, 100).toFixed(1);
+          currentServer.memory = memoryInMB;
+          
+          this.emit('server-status-changed', { 
+            ...currentServer,
+            uptime: this.calculateUptime(currentServer.startTime)
+          });
+        } else {
+          currentServer.cpu = '0.0';
+          currentServer.memory = '0';
+          this.emit('server-status-changed', { ...currentServer });
         }
       } catch (error) {
-        // psList 에러는 무시
+        console.error(`ps-list error for ${serverId}:`, error);
+        const currentServer = this.servers.get(serverId);
+        if (currentServer) {
+          currentServer.cpu = '0.0';
+          currentServer.memory = '0';
+          this.emit('server-status-changed', { ...currentServer });
+        }
       }
-    }, 5000);
+    }, 1000); // 1초마다 갱신
   }
 }
 

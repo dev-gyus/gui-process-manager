@@ -28,12 +28,52 @@ class App {
   }
 
   setupEventListeners() {
-    // Main controls
-    document.getElementById('start-all-btn')?.addEventListener('click', () => ipcRenderer.invoke('start-all'));
-    document.getElementById('stop-all-btn')?.addEventListener('click', () => ipcRenderer.invoke('stop-all'));
-    document.getElementById('clear-all-btn')?.addEventListener('click', () => this.clearAllServers());
-    document.getElementById('settings-btn')?.addEventListener('click', () => this.showSettings());
+    // Use only event delegation for ALL buttons to avoid timing issues
+    document.addEventListener('click', async (e) => {
+      if (e.target.id === 'start-all-btn') {
+        await ipcRenderer.invoke('start-all');
+      } else if (e.target.id === 'stop-all-btn') {
+        await ipcRenderer.invoke('stop-all');
+      } else if (e.target.id === 'clear-all-btn') {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Add busy state to prevent multiple clicks
+        const button = e.target;
+        if (button.disabled) {
+          return;
+        }
+        
+        button.disabled = true;
+        button.textContent = 'Clearing...';
+        
+        try {
+          await this.clearAllServers();
+        } catch (error) {
+          console.error('clearAllServers failed:', error);
+        } finally {
+          button.disabled = false;
+          button.innerHTML = `
+            <svg viewBox="0 0 24 24">
+              <path d="M19 4h-3.5l-1-1h-5l-1 1H5v2h14V4zM6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12z"/>
+            </svg>
+            Clear All
+          `;
+        }
+      } else if (e.target.id === 'settings-btn') {
+        await this.showSettings();
+      } else if (e.target.id === 'add-server-btn') {
+        this.showAddServerModal();
+      } else if (e.target.id === 'go-to-settings') {
+        e.preventDefault();
+        await this.showSettings();
+      }
+    });
+    
+    this.setupModalEventListeners();
+  }
 
+  setupModalEventListeners() {
     // Server detail modal
     document.getElementById('close-detail')?.addEventListener('click', () => this.hideServerDetail());
     document.getElementById('server-detail')?.addEventListener('click', (e) => {
@@ -80,7 +120,6 @@ class App {
     document.getElementById('preset-select')?.addEventListener('change', (e) => this.handlePresetSelect(e.target.value));
     document.getElementById('save-preset-btn')?.addEventListener('click', () => this.savePreset());
     document.getElementById('delete-preset-btn')?.addEventListener('click', () => this.deletePreset());
-
 
     // Global keydown
     document.addEventListener('keydown', (e) => {
@@ -142,15 +181,7 @@ class App {
         <a href="#" id="go-to-settings">Configure Project Folder</a>
       `;
       container.appendChild(emptyState);
-      document.getElementById('go-to-settings')?.addEventListener('click', (e) => {
-        e.preventDefault();
-        this.showSettings();
-      });
     }
-
-    document.getElementById('add-server-btn')?.addEventListener('click', () => {
-      this.showAddServerModal();
-    });
 
     this.servers.forEach(server => {
       const item = document.createElement('div');
@@ -163,8 +194,8 @@ class App {
           <div class="server-details">
             ${server.port ? `<span>Port: ${server.port}</span>` : ''}
             ${status === 'running' ? `<span>• Uptime: ${server.uptime || '0m'}</span>` : ''}
-            ${status === 'running' ? `<span>• CPU: ${server.cpu || 0}%</span>` : ''}
-            ${status === 'running' ? `<span>• Mem: ${server.memory || 0}MB</span>` : ''}
+            ${status === 'running' && server.cpu !== null ? `<span>• CPU: ${server.cpu}%</span>` : ''}
+            ${status === 'running' && server.memory !== null ? `<span>• Mem: ${server.memory}MB</span>` : ''}
             ${status === 'error' ? `<span class="error-text">• ${server.error || 'Unknown error'}</span>` : ''}
           </div>
         </div>
@@ -240,17 +271,49 @@ class App {
 
     await this.loadServerLogs(server.id);
     document.getElementById('server-detail').classList.remove('hidden');
+    
+    // 윈도우 크기 조정을 위해 main process에 알림
+    setTimeout(() => {
+      ipcRenderer.send('window-content-changed');
+    }, 100);
   }
 
   hideServerDetail() {
     document.getElementById('server-detail').classList.add('hidden');
     this.currentDetailServer = null;
+    
+    // 윈도우 크기 조정을 위해 main process에 알림
+    setTimeout(() => {
+      ipcRenderer.send('window-content-changed');
+    }, 100);
   }
 
   updateServerDetail(server) {
     if (!this.currentDetailServer || this.currentDetailServer.id !== server.id) return;
     document.getElementById('detail-pid').textContent = server.pid || '-';
-    document.getElementById('detail-uptime').textContent = server.uptime || '-';
+    document.getElementById('detail-port').textContent = server.port || 'N/A';
+    
+    // Detail 화면에서는 초단위까지 표시
+    const detailedUptime = server.startTime ? this.calculateUptimeWithSeconds(server.startTime) : '-';
+    document.getElementById('detail-uptime').textContent = detailedUptime;
+    
+    document.getElementById('detail-cpu').textContent = server.cpu !== null ? `${server.cpu}%` : '-';
+    document.getElementById('detail-memory').textContent = server.memory !== null ? `${server.memory}MB` : '-';
+    
+    // Open Browser 버튼 상태도 업데이트
+    const openBrowserBtn = document.getElementById('open-browser-btn');
+    if (openBrowserBtn) {
+      openBrowserBtn.disabled = !server.port;
+    }
+  }
+
+  calculateUptimeWithSeconds(startTime) {
+    if (!startTime) return '-';
+    const diff = Date.now() - new Date(startTime).getTime();
+    const hours = Math.floor(diff / 3600000);
+    const minutes = Math.floor((diff % 3600000) / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    return `${hours}h ${minutes}m ${seconds}s`;
   }
 
   async loadServerLogs(serverId) {
@@ -399,13 +462,16 @@ class App {
   }
 
   async clearAllServers() {
-    const serverCount = this.servers.length;
+    const serverCount = this.servers ? this.servers.length : 0;
+    
     if (serverCount === 0) {
       alert('No servers to clear.');
       return;
     }
 
-    if (confirm(`Are you sure you want to delete all ${serverCount} servers?\n\nThis action cannot be undone.`)) {
+    const userConfirmed = confirm(`Are you sure you want to delete all ${serverCount} servers?\n\nThis action cannot be undone.`);
+    
+    if (userConfirmed) {
       try {
         await ipcRenderer.invoke('clear-all-servers');
         await this.loadServers();

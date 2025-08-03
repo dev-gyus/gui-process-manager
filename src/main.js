@@ -172,6 +172,24 @@ class MSAServerManager {
     this.tray.setToolTip(`MSA Server Manager (${runningCount}/${totalCount} running)`);
   }
 
+  refreshWindowFrame() {
+    if (!this.window) return;
+    
+    // 윈도우 프레임을 강제로 새로고침하여 크기 변경을 반영
+    const currentBounds = this.window.getBounds();
+    
+    // 작은 크기 변경을 통해 프레임 새로고침 트리거
+    this.window.setBounds({
+      ...currentBounds,
+      width: currentBounds.width + 1
+    });
+    
+    // 즉시 원래 크기로 되돌림
+    setTimeout(() => {
+      this.window.setBounds(currentBounds);
+    }, 10);
+  }
+
   setupIpcHandlers() {
     // 폴더 선택 대화상자
     ipcMain.handle('select-folder', async () => {
@@ -280,6 +298,11 @@ class MSAServerManager {
     // 윈도우 숨기기
     ipcMain.on('hide-window', () => {
       this.window.hide();
+    });
+
+    // 윈도우 컨텐츠 변경 알림 처리
+    ipcMain.on('window-content-changed', () => {
+      this.refreshWindowFrame();
     });
 
     // 수동 서버 추가

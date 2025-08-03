@@ -114,6 +114,7 @@ body {
     width: 16px;
     height: 16px;
     fill: currentColor;
+    pointer-events: none;
 }
 
 .action-button.primary {
@@ -393,6 +394,7 @@ body {
 @media (prefers-color-scheme: dark) {
     body {
         background: transparent;
+        color: #ffffff;
     }
 
     #app {
@@ -403,6 +405,10 @@ body {
     .status-bar {
         background: #2a2a2a;
         border-color: #3a3a3a;
+    }
+
+    .header-title {
+        color: #ffffff;
     }
 
     .quick-actions {
@@ -418,12 +424,16 @@ body {
         background: #353535;
     }
 
+    .server-name {
+        color: #ffffff;
+    }
+
     .server-details {
-        color: #aaa;
+        color: #cccccc;
     }
 
     .server-actions svg {
-        fill: #aaa;
+        fill: #cccccc;
     }
 
     .icon-button:hover,
@@ -433,22 +443,91 @@ body {
 
     .modal-content {
         background: #2a2a2a;
+        color: #ffffff;
     }
 
     .modal-header {
         border-color: #3a3a3a;
     }
 
+    .modal-header h2 {
+        color: #ffffff;
+    }
+
     .close-button {
-        color: #aaa;
+        color: #cccccc;
     }
 
     .info-label {
-        color: #aaa;
+        color: #cccccc;
+    }
+
+    .info-value {
+        color: #ffffff;
     }
 
     .log-container {
         background: #1a1a1a;
+    }
+
+    .status-bar {
+        color: #cccccc;
+    }
+
+    .empty-state {
+        color: #cccccc;
+    }
+
+    .empty-state p {
+        color: #cccccc;
+    }
+
+    .empty-actions a {
+        color: #66b3ff;
+    }
+
+    /* Form elements in dark mode */
+    .form-group label {
+        color: #ffffff;
+    }
+
+    .form-group input[type="text"],
+    .form-group input[type="number"],
+    .preset-group select {
+        background-color: #3a3a3a;
+        border-color: #4a4a4a;
+        color: #ffffff;
+    }
+
+    .input-group button {
+        background: #3a3a3a;
+        border-color: #4a4a4a;
+        color: #ffffff;
+    }
+
+    .input-group button:hover {
+        background: #4a4a4a;
+    }
+
+    .small-icon-button {
+        border-color: #4a4a4a;
+        background: #3a3a3a;
+    }
+
+    .small-icon-button:hover {
+        background: rgba(255, 255, 255, 0.1);
+    }
+
+    .small-icon-button svg {
+        fill: #cccccc;
+    }
+
+    .modal-actions {
+        border-color: #3a3a3a;
+    }
+
+    .error-text {
+        color: #ff6b6b;
     }
 }
 
