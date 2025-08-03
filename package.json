@@ -1,0 +1,41 @@
+{
+  "name": "msa-server-manager",
+  "version": "1.0.0",
+  "description": "MSA Server Manager for macOS",
+  "main": "src/main.js",
+  "type": "module",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "dist": "electron-builder --mac",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "com.yourcompany.msa-server-manager",
+    "productName": "MSA Server Manager",
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.icns",
+      "extendInfo": {
+        "LSUIElement": 1
+      },
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    }
+  },
+  "devDependencies": {
+    "electron-builder": "^24.0.0"
+  },
+  "dependencies": {
+    "electron": "^37.0.0",
+    "electron-store": "^8.1.0",
+    "node-pty": "^1.0.0",
+    "ps-list": "^8.1.1"
+  }
+}

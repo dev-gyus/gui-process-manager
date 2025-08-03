@@ -1,0 +1,369 @@
+import { spawn } from 'child_process';
+import EventEmitter from 'events';
+import psList from 'ps-list';
+import Store from 'electron-store';
+
+class ServerManager extends EventEmitter {
+  constructor() {
+    super();
+    this.servers = new Map();
+    this.processes = new Map();
+    this.logs = new Map();
+  }
+
+  loadServers(serverConfigs) {
+    this.servers.clear();
+    this.processes.clear();
+    this.logs.clear();
+    serverConfigs.forEach(config => {
+      this.servers.set(config.id, { ...config, status: 'stopped' });
+      this.logs.set(config.id, []);
+    });
+    
+    // 수동으로 추가된 서버들도 로드
+    this.loadManualServers();
+  }
+
+  loadManualServers() {
+    const store = new Store();
+    const manualServers = store.get('manualServers', []);
+    
+    manualServers.forEach(config => {
+      if (!this.servers.has(config.id)) {
+        this.servers.set(config.id, { ...config, status: 'stopped', isManual: true });
+        this.logs.set(config.id, []);
+      }
+    });
+  }
+
+  addManualServer(serverConfig) {
+    const store = new Store();
+    
+    // 기존 수동 서버 목록 가져오기
+    const manualServers = store.get('manualServers', []);
+    
+    // 중복 ID 체크
+    if (this.servers.has(serverConfig.id)) {
+      throw new Error(`Server with ID '${serverConfig.id}' already exists`);
+    }
+    
+    // 새 서버 추가
+    manualServers.push(serverConfig);
+    store.set('manualServers', manualServers);
+    
+    // 서버 매니저에 추가
+    this.servers.set(serverConfig.id, { ...serverConfig, status: 'stopped', isManual: true });
+    this.logs.set(serverConfig.id, []);
+    
+    return { success: true };
+  }
+
+  async deleteServer(serverId) {
+    const server = this.servers.get(serverId);
+    if (!server) {
+      return { success: false, error: 'Server not found' };
+    }
+
+    try {
+      // 서버가 실행 중이면 먼저 중지
+      if (this.processes.has(serverId)) {
+        await this.stopServer(serverId);
+        // 프로세스가 완전히 종료될 시간을 줌
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      // 저장소에서 제거 (수동 서버인 경우)
+      if (server.isManual) {
+        const store = new Store();
+        const manualServers = store.get('manualServers', []);
+        const filteredServers = manualServers.filter(s => s.id !== serverId);
+        store.set('manualServers', filteredServers);
+      }
+
+      // 메모리에서 제거
+      this.servers.delete(serverId);
+      this.logs.delete(serverId);
+      
+      // 리소스 모니터링 정리
+      const intervalId = `monitor_${serverId}`;
+      if (this[intervalId]) {
+        clearInterval(this[intervalId]);
+        delete this[intervalId];
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.error(`Failed to delete server ${serverId}:`, error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async clearAllServers() {
+    try {
+      // 모든 실행 중인 서버 중지
+      await this.stopAll();
+      
+      // 프로세스가 완전히 종료될 시간을 줌
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // 저장소에서 수동 서버 목록 삭제
+      const store = new Store();
+      store.set('manualServers', []);
+      store.set('dynamicConfig', { rootPath: '', runCommand: 'npm start' });
+
+      // 메모리에서 모든 서버 삭제
+      this.servers.clear();
+      this.processes.clear();
+      this.logs.clear();
+
+      // 모든 리소스 모니터링 정리
+      Object.keys(this).forEach(key => {
+        if (key.startsWith('monitor_')) {
+          clearInterval(this[key]);
+          delete this[key];
+        }
+      });
+
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to clear all servers:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async startServer(serverId) {
+    const server = this.servers.get(serverId);
+    if (!server || this.processes.has(serverId)) {
+      return { success: false, error: 'Server is already running or not found' };
+    }
+
+    try {
+      const [command, ...args] = server.command.split(' ');
+
+      const serverProcess = spawn(command, args, {
+        cwd: server.path,
+        shell: true, // 'npm' 같은 명령어를 직접 실행하기 위해 필요
+        detached: true, // 부모 프로세스와 분리
+      });
+
+      this.processes.set(serverId, serverProcess);
+
+      serverProcess.stdout.on('data', (data) => {
+        const output = data.toString();
+        this.addLog(serverId, 'info', output);
+        
+        // 포트 번호 추출
+        this.extractPortFromOutput(serverId, output);
+      });
+
+      serverProcess.stderr.on('data', (data) => {
+        this.addLog(serverId, 'error', data.toString());
+      });
+
+      serverProcess.on('close', (code) => {
+        const currentServer = this.servers.get(serverId);
+        if (currentServer) {
+          currentServer.status = code === 0 ? 'stopped' : 'error';
+          currentServer.pid = null;
+          currentServer.error = code !== 0 ? `Process exited with code ${code}` : null;
+          this.emit('server-status-changed', { ...currentServer });
+        }
+        this.processes.delete(serverId);
+        if (code !== 0) {
+          this.addLog(serverId, 'error', `Process exited with code ${code}`);
+        }
+      });
+
+      serverProcess.on('error', (error) => {
+        const currentServer = this.servers.get(serverId);
+        if (currentServer) {
+          currentServer.status = 'error';
+          currentServer.error = error.message;
+          this.emit('server-status-changed', { ...currentServer });
+        }
+        this.processes.delete(serverId);
+        this.addLog(serverId, 'error', `Failed to start server: ${error.message}`);
+      });
+
+      server.status = 'running';
+      server.pid = serverProcess.pid;
+      server.startTime = new Date();
+      server.error = null;
+
+      this.emit('server-status-changed', { ...server });
+      this.addLog(serverId, 'info', `Server starting with command: "${server.command}" (PID: ${serverProcess.pid})`);
+
+      await this.startResourceMonitoring(serverId);
+
+      return { success: true };
+    } catch (error) {
+      server.status = 'error';
+      server.error = error.message;
+      this.emit('server-status-changed', { ...server });
+      return { success: false, error: error.message };
+    }
+  }
+
+  async stopServer(serverId) {
+    const serverProcess = this.processes.get(serverId);
+    if (!serverProcess) {
+      return { success: false, error: 'Server process not found' };
+    }
+
+    try {
+      // 프로세스 그룹 전체에 SIGTERM 전송
+      process.kill(-serverProcess.pid, 'SIGTERM');
+      this.addLog(serverId, 'info', 'Stopping server...');
+
+      // 5초 후 강제 종료
+      setTimeout(() => {
+        if (this.processes.has(serverId)) {
+          process.kill(-serverProcess.pid, 'SIGKILL');
+          this.addLog(serverId, 'info', 'Server forcefully killed.');
+        }
+      }, 5000);
+
+      return { success: true };
+    } catch (error) {
+      // 프로세스가 이미 종료된 경우 등
+      if (error.code === 'ESRCH') {
+        this.processes.delete(serverId);
+        return { success: true };
+      }
+      console.error(`Failed to stop server ${serverId}:`, error);
+      this.addLog(serverId, 'error', `Failed to stop server: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async restartServer(serverId) {
+    const server = this.servers.get(serverId);
+    if (!server) return { success: false, error: 'Server not found' };
+
+    if (this.processes.has(serverId)) {
+      await this.stopServer(serverId);
+      // 프로세스가 완전히 종료될 시간을 줌
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    return this.startServer(serverId);
+  }
+
+  async startAll() {
+    const promises = Array.from(this.servers.keys()).map(id => this.startServer(id));
+    return Promise.all(promises);
+  }
+
+  async stopAll() {
+    const promises = Array.from(this.processes.keys()).map(id => this.stopServer(id));
+    return Promise.all(promises);
+  }
+
+  getAllServers() {
+    return Array.from(this.servers.values()).map(server => ({
+      ...server,
+      uptime: this.calculateUptime(server.startTime)
+    }));
+  }
+
+  getRunningServers() {
+    return this.getAllServers().filter(server => server.status === 'running');
+  }
+
+  hasRunningServers() {
+    return this.getRunningServers().length > 0;
+  }
+
+  areAllRunning() {
+    const allServers = this.getAllServers();
+    if (allServers.length === 0) return false;
+    return allServers.every(server => server.status === 'running');
+  }
+
+  getLogs(serverId) {
+    return this.logs.get(serverId) || [];
+  }
+
+  addLog(serverId, level, message) {
+    const logs = this.logs.get(serverId);
+    if (!logs) return;
+
+    const logEntry = {
+      timestamp: new Date(),
+      level,
+      message: message.trim()
+    };
+
+    logs.push(logEntry);
+    if (logs.length > 1000) {
+      logs.shift();
+    }
+    this.emit('log-update', serverId, logEntry);
+  }
+
+  calculateUptime(startTime) {
+    if (!startTime) return '-';
+    const diff = Date.now() - new Date(startTime).getTime();
+    const hours = Math.floor(diff / 3600000);
+    const minutes = Math.floor((diff % 3600000) / 60000);
+    return `${hours}h ${minutes}m`;
+  }
+
+  extractPortFromOutput(serverId, output) {
+    const server = this.servers.get(serverId);
+    if (!server || server.port) return; // 이미 포트가 설정되어 있으면 건너뛰기
+
+    // 다양한 포트 패턴 매칭
+    const portPatterns = [
+      /listening on port (\d+)/i,
+      /server.*running.*port (\d+)/i,
+      /listening.*:(\d+)/i,
+      /port (\d+)/i,
+      /localhost:(\d+)/i,
+      /:(\d{4,5})/g
+    ];
+
+    for (const pattern of portPatterns) {
+      const match = output.match(pattern);
+      if (match && match[1]) {
+        const port = parseInt(match[1]);
+        if (port >= 3000 && port <= 65535) { // 유효한 포트 범위
+          server.port = port;
+          this.emit('server-status-changed', { ...server });
+          break;
+        }
+      }
+    }
+  }
+
+  async startResourceMonitoring(serverId) {
+    const intervalId = `monitor_${serverId}`;
+    // 이전 모니터링이 있다면 중지
+    if (this[intervalId]) clearInterval(this[intervalId]);
+
+    this[intervalId] = setInterval(async () => {
+      const server = this.servers.get(serverId);
+      const processInfo = this.processes.get(serverId);
+
+      if (!server || !processInfo || server.status !== 'running') {
+        clearInterval(this[intervalId]);
+        return;
+      }
+
+      try {
+        const processes = await psList();
+        const mainProcess = processes.find(p => p.pid === processInfo.pid);
+
+        if (mainProcess) {
+          server.cpu = mainProcess.cpu.toFixed(1);
+          server.memory = (mainProcess.memory / 1024).toFixed(0); // MB
+          this.emit('server-status-changed', { ...server });
+        }
+      } catch (error) {
+        // psList 에러는 무시
+      }
+    }, 5000);
+  }
+}
+
+export default ServerManager;
