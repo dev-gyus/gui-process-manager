@@ -29,7 +29,7 @@
       "entitlementsInherit": "build/entitlements.mac.plist"
     }
   },
-  "author": "Flitto",
+  "author": "Gyus",
   "devDependencies": {
     "electron": "^37.0.0",
     "electron-builder": "^24.0.0"

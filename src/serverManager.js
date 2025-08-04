@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import EventEmitter from 'events';
 import psList from 'ps-list';
 import Store from 'electron-store';
+import path from 'path';
 
 class ServerManager extends EventEmitter {
   constructor() {
@@ -72,12 +73,19 @@ class ServerManager extends EventEmitter {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
 
-      // 저장소에서 제거 (수동 서버인 경우)
+      // 저장소에서 제거
+      const store = new Store();
       if (server.isManual) {
-        const store = new Store();
+        // 수동 서버인 경우
         const manualServers = store.get('manualServers', []);
         const filteredServers = manualServers.filter(s => s.id !== serverId);
         store.set('manualServers', filteredServers);
+      } else {
+        // 동적 설정 서버인 경우 - dynamicConfig 삭제
+        const dynamicConfig = store.get('dynamicConfig');
+        if (dynamicConfig && dynamicConfig.rootPath && path.basename(dynamicConfig.rootPath) === serverId) {
+          store.set('dynamicConfig', { rootPath: '', runCommand: 'npm start' });
+        }
       }
 
       // 메모리에서 제거
@@ -297,23 +305,62 @@ class ServerManager extends EventEmitter {
     }
 
     try {
-      // 프로세스 그룹 전체에 SIGTERM 전송
-      process.kill(-serverProcess.pid, 'SIGTERM');
+      const server = this.servers.get(serverId);
+      if (server) {
+        server.status = 'stopping';
+        this.emit('server-status-changed', { ...server });
+      }
+
       this.addLog(serverId, 'info', 'Stopping server...');
 
-      // 5초 후 강제 종료
-      setTimeout(() => {
-        if (this.processes.has(serverId)) {
-          process.kill(-serverProcess.pid, 'SIGKILL');
-          this.addLog(serverId, 'info', 'Server forcefully killed.');
+      // 1단계: SIGTERM으로 정상 종료 요청
+      try {
+        process.kill(-serverProcess.pid, 'SIGTERM');
+      } catch (killError) {
+        if (killError.code !== 'ESRCH') {
+          throw killError;
         }
-      }, 5000);
+      }
+
+      // 프로세스가 정상 종료되기를 기다림
+      await new Promise((resolve) => {
+        const checkInterval = setInterval(() => {
+          if (!this.processes.has(serverId)) {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 100);
+
+        // 5초 후 강제 종료
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          if (this.processes.has(serverId)) {
+            try {
+              process.kill(-serverProcess.pid, 'SIGKILL');
+              this.addLog(serverId, 'info', 'Server forcefully killed.');
+            } catch (killError) {
+              if (killError.code !== 'ESRCH') {
+                console.error(`Failed to force kill server ${serverId}:`, killError);
+              }
+            }
+          }
+          resolve();
+        }, 5000);
+      });
 
       return { success: true };
     } catch (error) {
       // 프로세스가 이미 종료된 경우 등
       if (error.code === 'ESRCH') {
         this.processes.delete(serverId);
+        const server = this.servers.get(serverId);
+        if (server) {
+          server.status = 'stopped';
+          server.pid = null;
+          server.cpu = null;
+          server.memory = null;
+          this.emit('server-status-changed', { ...server });
+        }
         return { success: true };
       }
       console.error(`Failed to stop server ${serverId}:`, error);
@@ -490,6 +537,40 @@ class ServerManager extends EventEmitter {
         }
       }
     }, 1000); // 1초마다 갱신
+  }
+
+  cleanup() {
+    console.log('Cleaning up ServerManager resources...');
+    
+    // 모든 리소스 모니터링 정리
+    Object.keys(this).forEach(key => {
+      if (key.startsWith('monitor_')) {
+        clearInterval(this[key]);
+        delete this[key];
+      }
+    });
+
+    // 남아있는 프로세스들 강제 종료
+    this.processes.forEach((process, serverId) => {
+      try {
+        console.log(`Force killing remaining process for server ${serverId} (PID: ${process.pid})`);
+        process.kill('SIGKILL');
+      } catch (error) {
+        if (error.code !== 'ESRCH') {
+          console.error(`Failed to kill process for server ${serverId}:`, error);
+        }
+      }
+    });
+
+    // 모든 맵 정리
+    this.processes.clear();
+    this.servers.clear();
+    this.logs.clear();
+
+    // 이벤트 리스너 정리
+    this.removeAllListeners();
+
+    console.log('ServerManager cleanup completed');
   }
 }
 

@@ -64,9 +64,6 @@ class App {
         await this.showSettings();
       } else if (e.target.id === 'add-server-btn') {
         this.showAddServerModal();
-      } else if (e.target.id === 'go-to-settings') {
-        e.preventDefault();
-        await this.showSettings();
       }
     });
     
@@ -206,7 +203,7 @@ class App {
       emptyState.className = 'empty-state';
       emptyState.innerHTML = `
         <p>No servers configured.</p>
-        <a href="#" id="go-to-settings">Configure Project Folder</a>
+        <a href="#" id="add-server-btn">Configure Project Folder</a>
       `;
       container.appendChild(emptyState);
     }

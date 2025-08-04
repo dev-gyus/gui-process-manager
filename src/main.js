@@ -81,6 +81,7 @@ class MSAServerManager {
     this.window = null;
     this.serverManager = new ServerManager();
     this.store = new Store();
+    this.isQuitting = false; // 종료 상태 플래그
 
     // 기본 서버 설정
     this.initializeServers();
@@ -216,8 +217,7 @@ class MSAServerManager {
       {
         label: 'Quit',
         click: async () => {
-          await this.serverManager.stopAll();
-          app.quit();
+          await this.gracefulShutdown();
         }
       }
     ]);
@@ -451,6 +451,61 @@ class MSAServerManager {
 
     notification.show();
   }
+
+  async gracefulShutdown() {
+    if (this.isQuitting) {
+      return; // 이미 종료 중이면 중복 실행 방지
+    }
+    
+    this.isQuitting = true;
+    
+    try {
+      console.log('Starting graceful shutdown...');
+      
+      // 실행 중인 서버가 없으면 바로 종료
+      if (!this.serverManager.hasRunningServers()) {
+        console.log('No running servers, exiting immediately');
+        this.serverManager.cleanup();
+        app.exit(0);
+        return;
+      }
+      
+      // 모든 서버가 종료될 때까지 기다리는 Promise
+      const waitForAllServersToStop = new Promise((resolve) => {
+        const checkInterval = setInterval(() => {
+          if (!this.serverManager.hasRunningServers()) {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 100); // 100ms마다 체크
+
+        // 최대 15초 타임아웃 (안전장치)
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          console.log('Timeout reached, forcing shutdown');
+          resolve();
+        }, 15000);
+      });
+
+      // 모든 서버 중지 시작
+      await this.serverManager.stopAll();
+      
+      // 모든 서버가 실제로 종료될 때까지 대기
+      await waitForAllServersToStop;
+      
+      // 리소스 정리
+      if (this.serverManager) {
+        this.serverManager.cleanup();
+      }
+      
+      console.log('Graceful shutdown completed');
+    } catch (error) {
+      console.error('Error during graceful shutdown:', error);
+    } finally {
+      // 강제로 앱 종료
+      app.exit(0);
+    }
+  }
 }
 
 // 앱 인스턴스
@@ -478,6 +533,28 @@ app.on('window-all-closed', (e) => {
 });
 
 // 앱 종료 전 정리
-app.on('before-quit', async () => {
-  await manager.serverManager.stopAll();
+app.on('before-quit', async (event) => {
+  if (manager && manager.serverManager && !manager.isQuitting) {
+    event.preventDefault(); // 기본 종료 동작 방지
+    await manager.gracefulShutdown();
+  }
+});
+
+// 강제 종료 시그널 핸들링
+process.on('SIGTERM', async () => {
+  console.log('Received SIGTERM signal');
+  if (manager) {
+    await manager.gracefulShutdown();
+  } else {
+    process.exit(0);
+  }
+});
+
+process.on('SIGINT', async () => {
+  console.log('Received SIGINT signal');
+  if (manager) {
+    await manager.gracefulShutdown();
+  } else {
+    process.exit(0);
+  }
 });
