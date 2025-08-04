@@ -131,6 +131,78 @@ class ServerManager extends EventEmitter {
     }
   }
 
+  async updateServer(updatedServer) {
+    const server = this.servers.get(updatedServer.id);
+    if (!server) {
+      return { success: false, error: 'Server not found' };
+    }
+
+    try {
+      // 서버가 실행 중이면 중지해야 함 (경로나 명령어가 변경되었을 수 있으므로)
+      const wasRunning = server.status === 'running';
+      if (wasRunning) {
+        await this.stopServer(updatedServer.id);
+        // 프로세스가 완전히 종료될 시간을 줌
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      // 저장소 업데이트 (수동 서버인 경우)
+      if (server.isManual) {
+        const store = new Store();
+        const manualServers = store.get('manualServers', []);
+        const serverIndex = manualServers.findIndex(s => s.id === updatedServer.id);
+        
+        if (serverIndex !== -1) {
+          manualServers[serverIndex] = {
+            ...manualServers[serverIndex],
+            name: updatedServer.name,
+            path: updatedServer.path,
+            command: updatedServer.command,
+            port: updatedServer.port
+          };
+          store.set('manualServers', manualServers);
+        }
+      } else {
+        // 동적 설정 서버인 경우 (rootPath에서 생성된 서버)
+        const store = new Store();
+        const dynamicConfig = store.get('dynamicConfig');
+        if (dynamicConfig) {
+          dynamicConfig.runCommand = updatedServer.command;
+          store.set('dynamicConfig', dynamicConfig);
+        }
+      }
+
+      // 메모리의 서버 정보 업데이트
+      const updatedServerData = {
+        ...server,
+        name: updatedServer.name,
+        path: updatedServer.path,
+        command: updatedServer.command,
+        port: updatedServer.port,
+        status: 'stopped', // 중지된 상태로 설정
+        pid: null,
+        startTime: null,
+        error: null,
+        cpu: null,
+        memory: null
+      };
+
+      this.servers.set(updatedServer.id, updatedServerData);
+
+      // 서버가 실행 중이었다면 다시 시작
+      if (wasRunning) {
+        setTimeout(async () => {
+          await this.startServer(updatedServer.id);
+        }, 500);
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.error(`Failed to update server ${updatedServer.id}:`, error);
+      return { success: false, error: error.message };
+    }
+  }
+
   async startServer(serverId) {
     const server = this.servers.get(serverId);
     if (!server || this.processes.has(serverId)) {
@@ -144,6 +216,10 @@ class ServerManager extends EventEmitter {
         cwd: server.path,
         shell: true, // 'npm' 같은 명령어를 직접 실행하기 위해 필요
         detached: true, // 부모 프로세스와 분리
+        env: {
+          ...process.env,
+          PATH: process.env.PATH
+        }
       });
 
       this.processes.set(serverId, serverProcess);

@@ -6,8 +6,74 @@ import ServerManager from "./serverManager.js";
 import Store from "electron-store";
 
 import { exec } from "child_process";
+import { promisify } from "util";
 
+const execAsync = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// 자동 경로 탐지 함수
+async function detectNodePaths() {
+  const store = new Store();
+  const savedPaths = store.get('nodePaths');
+  
+  if (savedPaths && savedPaths.node && savedPaths.npm) {
+    return savedPaths;
+  }
+
+  const paths = {
+    node: null,
+    npm: null
+  };
+
+  try {
+    // node 경로 찾기
+    const nodeResult = await execAsync('which node');
+    paths.node = nodeResult.stdout.trim();
+  } catch (error) {
+    console.log('Node.js path not found via which command');
+  }
+
+  try {
+    // npm 경로 찾기
+    const npmResult = await execAsync('which npm');
+    paths.npm = npmResult.stdout.trim();
+  } catch (error) {
+    console.log('npm path not found via which command');
+  }
+
+  // 경로를 찾았으면 저장
+  if (paths.node && paths.npm) {
+    store.set('nodePaths', paths);
+  }
+
+  return paths;
+}
+
+// PATH 환경변수 설정 (packaged 앱에서 필요)
+async function setupEnvironmentPaths() {
+  if (app.isPackaged) {
+    const paths = await detectNodePaths();
+    const pathDirs = [];
+    
+    // 감지된 경로들의 디렉토리 추가
+    if (paths.node) {
+      pathDirs.push(path.dirname(paths.node));
+    }
+    if (paths.npm) {
+      pathDirs.push(path.dirname(paths.npm));
+    }
+    
+    // 기본 경로들 추가
+    pathDirs.push('/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/bin');
+    
+    const currentPath = process.env.PATH || '';
+    const pathSeparator = process.platform === 'win32' ? ';' : ':';
+    const uniquePaths = [...new Set(pathDirs)]; // 중복 제거
+    const newPath = uniquePaths.join(pathSeparator);
+    
+    process.env.PATH = currentPath ? `${newPath}${pathSeparator}${currentPath}` : newPath;
+  }
+}
 
 class MSAServerManager {
   constructor() {
@@ -324,6 +390,13 @@ class MSAServerManager {
       return result;
     });
 
+    // 서버 정보 업데이트
+    ipcMain.handle('update-server', async (event, updatedServer) => {
+      const result = await this.serverManager.updateServer(updatedServer);
+      this.updateTrayIcon();
+      return result;
+    });
+
     // 서버 상태 변경 알림
     this.serverManager.on('server-status-changed', (server) => {
       if (this.window) {
@@ -335,6 +408,26 @@ class MSAServerManager {
       if (this.store.get('settings.notifications', true)) {
         this.showNotification(server);
       }
+    });
+
+    // Node 경로 가져오기
+    ipcMain.handle('get-node-paths', () => {
+      return this.store.get('nodePaths', { node: '', npm: '' });
+    });
+
+    // Node 경로 저장
+    ipcMain.handle('save-node-paths', async (event, paths) => {
+      this.store.set('nodePaths', paths);
+      // 경로가 변경되면 PATH 환경변수도 다시 설정
+      await setupEnvironmentPaths();
+      return true;
+    });
+
+    // Node 경로 자동 탐지
+    ipcMain.handle('detect-node-paths', async () => {
+      // 저장된 경로 삭제하고 다시 탐지
+      this.store.delete('nodePaths');
+      return await detectNodePaths();
     });
 
     // 로그 업데이트
@@ -365,6 +458,9 @@ let manager;
 
 // 앱 준비
 app.whenReady().then(async () => {
+  // 환경 경로 설정
+  await setupEnvironmentPaths();
+  
   manager = new MSAServerManager();
   manager.setupIpcHandlers(); // IPC 핸들러를 먼저 설정
   manager.createTray();

@@ -110,7 +110,17 @@ class App {
     document.getElementById('save-settings-btn')?.addEventListener('click', async () => {
       const rootPath = document.getElementById('root-path').value;
       const runCommand = document.getElementById('run-command').value;
+      const nodePath = document.getElementById('node-path').value;
+      const npmPath = document.getElementById('npm-path').value;
+      
+      // 동적 설정 저장
       await ipcRenderer.invoke('save-dynamic-config', { rootPath, runCommand });
+      
+      // Node 경로 저장
+      if (nodePath || npmPath) {
+        await ipcRenderer.invoke('save-node-paths', { node: nodePath, npm: npmPath });
+      }
+      
       this.hideSettings();
       await this.loadServers(); // Refresh server list
     });
@@ -120,6 +130,24 @@ class App {
     document.getElementById('preset-select')?.addEventListener('change', (e) => this.handlePresetSelect(e.target.value));
     document.getElementById('save-preset-btn')?.addEventListener('click', () => this.savePreset());
     document.getElementById('delete-preset-btn')?.addEventListener('click', () => this.deletePreset());
+
+    // Node path controls
+    document.getElementById('detect-paths-btn')?.addEventListener('click', async () => {
+      await this.detectNodePaths();
+    });
+
+    // Server detail edit controls
+    document.getElementById('edit-server-btn')?.addEventListener('click', () => this.startEditingServer());
+    document.getElementById('cancel-edit-btn')?.addEventListener('click', () => this.cancelEditingServer());
+    document.getElementById('save-edit-btn')?.addEventListener('click', async () => {
+      await this.saveServerChanges();
+    });
+    document.getElementById('browse-edit-path-btn')?.addEventListener('click', async () => {
+      const path = await ipcRenderer.invoke('select-folder');
+      if (path) {
+        document.getElementById('edit-server-path').value = path;
+      }
+    });
 
     // Global keydown
     document.addEventListener('keydown', (e) => {
@@ -258,10 +286,14 @@ class App {
   async showServerDetail(server) {
     this.currentDetailServer = server;
     document.getElementById('detail-server-name').textContent = server.name;
+    document.getElementById('detail-name').textContent = server.name;
     document.getElementById('detail-path').textContent = server.path;
     document.getElementById('detail-script').textContent = server.command; // Use command
     document.getElementById('detail-port').textContent = server.port || 'N/A';
     this.updateServerDetail(server);
+
+    // Reset to view mode
+    this.cancelEditingServer();
 
     const openBrowserBtn = document.getElementById('open-browser-btn');
     openBrowserBtn.onclick = () => ipcRenderer.invoke('open-browser', server.port);
@@ -361,6 +393,12 @@ class App {
     const config = await ipcRenderer.invoke('get-dynamic-config');
     document.getElementById('root-path').value = config.rootPath;
     document.getElementById('run-command').value = config.runCommand;
+    
+    // Node 경로 로드
+    const nodePaths = await ipcRenderer.invoke('get-node-paths');
+    document.getElementById('node-path').value = nodePaths.node || '';
+    document.getElementById('npm-path').value = nodePaths.npm || '';
+    
     await this.loadPresets();
     document.getElementById('settings-modal').classList.remove('hidden');
   }
@@ -479,6 +517,108 @@ class App {
         console.error('Failed to clear all servers:', error);
         alert('Failed to clear all servers. Please check the console for details.');
       }
+    }
+  }
+
+  async detectNodePaths() {
+    const button = document.getElementById('detect-paths-btn');
+    const originalText = button.textContent;
+    
+    try {
+      button.disabled = true;
+      button.textContent = 'Detecting...';
+      
+      const paths = await ipcRenderer.invoke('detect-node-paths');
+      
+      if (paths.node) {
+        document.getElementById('node-path').value = paths.node;
+      }
+      if (paths.npm) {
+        document.getElementById('npm-path').value = paths.npm;
+      }
+      
+      if (paths.node || paths.npm) {
+        alert('Node.js paths detected successfully!');
+      } else {
+        alert('Could not auto-detect Node.js paths. Please set them manually.');
+      }
+    } catch (error) {
+      console.error('Failed to detect node paths:', error);
+      alert('Failed to detect Node.js paths. Please set them manually.');
+    } finally {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+
+  startEditingServer() {
+    if (!this.currentDetailServer) return;
+
+    // 편집 폼에 현재 값들 채우기
+    document.getElementById('edit-server-name').value = this.currentDetailServer.name;
+    document.getElementById('edit-server-path').value = this.currentDetailServer.path;
+    document.getElementById('edit-server-command').value = this.currentDetailServer.command;
+    document.getElementById('edit-server-port').value = this.currentDetailServer.port || '';
+
+    // 뷰 모드 숨기고 편집 모드 표시
+    document.getElementById('detail-view').classList.add('hidden');
+    document.getElementById('detail-edit-form').classList.remove('hidden');
+    document.getElementById('edit-server-btn').style.display = 'none';
+  }
+
+  cancelEditingServer() {
+    // 편집 모드 숨기고 뷰 모드 표시
+    document.getElementById('detail-view').classList.remove('hidden');
+    document.getElementById('detail-edit-form').classList.add('hidden');
+    document.getElementById('edit-server-btn').style.display = 'block';
+  }
+
+  async saveServerChanges() {
+    if (!this.currentDetailServer) return;
+
+    const name = document.getElementById('edit-server-name').value.trim();
+    const path = document.getElementById('edit-server-path').value.trim();
+    const command = document.getElementById('edit-server-command').value.trim();
+    const port = document.getElementById('edit-server-port').value.trim();
+
+    if (!name || !path || !command) {
+      alert('Please fill in all required fields (Name, Path, Command).');
+      return;
+    }
+
+    const updatedServer = {
+      id: this.currentDetailServer.id,
+      name,
+      path,
+      command,
+      port: port ? parseInt(port) : null
+    };
+
+    try {
+      const result = await ipcRenderer.invoke('update-server', updatedServer);
+      if (result.success) {
+        // 서버 목록 새로고침
+        await this.loadServers();
+        
+        // 업데이트된 서버 정보로 상세 화면 갱신
+        const updatedServerFromList = this.servers.find(s => s.id === this.currentDetailServer.id);
+        if (updatedServerFromList) {
+          this.currentDetailServer = updatedServerFromList;
+          document.getElementById('detail-server-name').textContent = updatedServerFromList.name;
+          document.getElementById('detail-name').textContent = updatedServerFromList.name;
+          document.getElementById('detail-path').textContent = updatedServerFromList.path;
+          document.getElementById('detail-script').textContent = updatedServerFromList.command;
+          document.getElementById('detail-port').textContent = updatedServerFromList.port || 'N/A';
+        }
+        
+        // 편집 모드 종료
+        this.cancelEditingServer();
+      } else {
+        alert('Failed to update server: ' + (result.error || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('Failed to update server:', error);
+      alert('Failed to update server. Please check the console for details.');
     }
   }
 

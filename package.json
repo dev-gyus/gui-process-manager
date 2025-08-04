@@ -29,11 +29,12 @@
       "entitlementsInherit": "build/entitlements.mac.plist"
     }
   },
+  "author": "Flitto",
   "devDependencies": {
+    "electron": "^37.0.0",
     "electron-builder": "^24.0.0"
   },
   "dependencies": {
-    "electron": "^37.0.0",
     "electron-store": "^8.1.0",
     "node-pty": "^1.0.0",
     "ps-list": "^8.1.1"

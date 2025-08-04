@@ -529,6 +529,10 @@ body {
     .error-text {
         color: #ff6b6b;
     }
+
+    .icon-button {
+        background: #ffffff;
+    }
 }
 
 /* Settings Styles */
