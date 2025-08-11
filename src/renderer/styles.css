@@ -244,6 +244,128 @@ body {
     color: #666;
 }
 
+/* Individual field editing styles */
+.editable-field {
+    position: relative;
+}
+
+.editable-value {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    position: relative;
+}
+
+.edit-field-btn, .save-field-btn, .cancel-field-btn, .browse-btn {
+    background: none;
+    border: none;
+    padding: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.edit-field-btn:hover, .save-field-btn:hover, .cancel-field-btn:hover, .browse-btn:hover {
+    opacity: 1;
+    background: rgba(0, 122, 255, 0.1);
+}
+
+.edit-field-btn svg, .save-field-btn svg, .cancel-field-btn svg {
+    width: 14px;
+    height: 14px;
+    fill: #007AFF;
+}
+
+.save-field-btn svg {
+    fill: #34C759;
+}
+
+.cancel-field-btn svg {
+    fill: #FF3B30;
+}
+
+.edit-controls {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 6px;
+    padding: 8px;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.field-input {
+    flex: 1;
+    padding: 4px 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 12px;
+    background: white;
+}
+
+.field-input:focus {
+    outline: none;
+    border-color: #007AFF;
+    box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.1);
+}
+
+.browse-btn {
+    font-size: 14px;
+    background: #f1f1f1;
+    border: 1px solid #ddd;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+.browse-btn:hover {
+    background: #e9ecef;
+    border-color: #007AFF;
+}
+
+.input-group {
+    display: flex;
+    gap: 4px;
+    flex: 1;
+}
+
+.input-group .field-input {
+    flex: 1;
+}
+
+/* Hide other edit controls when one field is being edited */
+.editing .editable-field:not(.field-editing) .edit-field-btn {
+    display: none;
+}
+
+.field-editing .info-value {
+    opacity: 0;
+}
+
+/* Show edit button on hover */
+.editable-field:hover .edit-field-btn {
+    opacity: 0.8;
+}
+
+.editable-field:not(:hover) .edit-field-btn {
+    opacity: 0.3;
+}
+
+/* Spin animation for loading states */
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
 /* Modal Styles */
 .modal {
     position: fixed;

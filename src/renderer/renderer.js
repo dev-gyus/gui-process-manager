@@ -133,7 +133,7 @@ class App {
       await this.detectNodePaths();
     });
 
-    // Server detail edit controls
+    // Server detail edit controls (legacy form - now hidden by default)
     document.getElementById('edit-server-btn')?.addEventListener('click', () => this.startEditingServer());
     document.getElementById('cancel-edit-btn')?.addEventListener('click', () => this.cancelEditingServer());
     document.getElementById('save-edit-btn')?.addEventListener('click', async () => {
@@ -143,6 +143,39 @@ class App {
       const path = await ipcRenderer.invoke('select-folder');
       if (path) {
         document.getElementById('edit-server-path').value = path;
+      }
+    });
+
+    // Individual field editing event delegation
+    document.addEventListener('click', async (e) => {
+      if (e.target.classList.contains('edit-field-btn')) {
+        this.startFieldEditing(e.target.dataset.field);
+      } else if (e.target.classList.contains('save-field-btn')) {
+        await this.saveField(e.target.dataset.field);
+      } else if (e.target.classList.contains('cancel-field-btn')) {
+        this.cancelFieldEditing(e.target.dataset.field);
+      } else if (e.target.classList.contains('browse-btn')) {
+        await this.browseForField(e.target.dataset.field);
+      }
+    });
+
+    // Keyboard shortcuts for field editing
+    document.addEventListener('keydown', (e) => {
+      // Find the currently active field input
+      const activeInput = document.querySelector('.field-editing .field-input:focus');
+      
+      if (activeInput) {
+        const fieldName = activeInput.closest('.editable-field').id.replace('-field', '');
+        
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          this.saveField(fieldName);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          this.cancelFieldEditing(fieldName);
+          // Remove focus from input
+          activeInput.blur();
+        }
       }
     });
 
@@ -616,6 +649,181 @@ class App {
     } catch (error) {
       console.error('Failed to update server:', error);
       alert('Failed to update server. Please check the console for details.');
+    }
+  }
+
+  // Individual field editing methods
+  startFieldEditing(fieldName) {
+    if (!this.currentDetailServer) return;
+
+    // Cancel any other field editing
+    this.cancelAllFieldEditing();
+
+    const field = document.getElementById(`${fieldName}-field`);
+    if (!field) return;
+
+    // Add editing class to detail view
+    document.getElementById('detail-view').classList.add('editing');
+    field.classList.add('field-editing');
+
+    // Show edit controls and hide value
+    const editControls = field.querySelector('.edit-controls');
+    const editButton = field.querySelector('.edit-field-btn');
+    
+    editControls.style.display = 'flex';
+    editButton.style.display = 'none';
+
+    // Set current value in the input
+    const input = field.querySelector('.field-input');
+    let currentValue = '';
+    
+    switch (fieldName) {
+      case 'name':
+        currentValue = this.currentDetailServer.name || '';
+        break;
+      case 'path':
+        currentValue = this.currentDetailServer.path || '';
+        break;
+      case 'command':
+        currentValue = this.currentDetailServer.command || '';
+        break;
+      case 'port':
+        currentValue = this.currentDetailServer.port || '';
+        break;
+    }
+    
+    input.value = currentValue;
+    input.focus();
+    input.select();
+  }
+
+  async saveField(fieldName) {
+    if (!this.currentDetailServer) return;
+
+    const field = document.getElementById(`${fieldName}-field`);
+    if (!field) return;
+
+    const input = field.querySelector('.field-input');
+    const newValue = input.value.trim();
+
+    // Validation
+    if (fieldName === 'name' && !newValue) {
+      alert('Name cannot be empty');
+      return;
+    }
+    if (fieldName === 'path' && !newValue) {
+      alert('Path cannot be empty');
+      return;
+    }
+    if (fieldName === 'command' && !newValue) {
+      alert('Command cannot be empty');
+      return;
+    }
+
+    // Create update object with only the changed field
+    const updatedServer = {
+      id: this.currentDetailServer.id,
+      name: this.currentDetailServer.name,
+      path: this.currentDetailServer.path,
+      command: this.currentDetailServer.command,
+      port: this.currentDetailServer.port
+    };
+
+    // Update the specific field
+    switch (fieldName) {
+      case 'name':
+        updatedServer.name = newValue;
+        break;
+      case 'path':
+        updatedServer.path = newValue;
+        break;
+      case 'command':
+        updatedServer.command = newValue;
+        break;
+      case 'port':
+        updatedServer.port = newValue ? parseInt(newValue) : null;
+        break;
+    }
+
+    try {
+      // Save button loading state
+      const saveButton = field.querySelector('.save-field-btn');
+      const originalSaveHtml = saveButton.innerHTML;
+      saveButton.innerHTML = '<span style="width: 14px; height: 14px; border: 2px solid #34C759; border-top: 2px solid transparent; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block;"></span>';
+      saveButton.disabled = true;
+
+      const result = await ipcRenderer.invoke('update-server', updatedServer);
+      
+      if (result.success) {
+        // Update current server object
+        this.currentDetailServer = { ...this.currentDetailServer, ...updatedServer };
+        
+        // Update the display value
+        const displayElement = document.getElementById(`detail-${fieldName === 'command' ? 'script' : fieldName}`);
+        if (displayElement) {
+          if (fieldName === 'port') {
+            displayElement.textContent = updatedServer.port || 'N/A';
+          } else {
+            displayElement.textContent = updatedServer[fieldName];
+          }
+        }
+
+        // Update header name if name was changed
+        if (fieldName === 'name') {
+          document.getElementById('detail-server-name').textContent = updatedServer.name;
+        }
+
+        // Refresh server list to reflect changes
+        await this.loadServers();
+        
+        // Cancel editing
+        this.cancelFieldEditing(fieldName);
+      } else {
+        alert('Failed to update server: ' + (result.error || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error(`Failed to update ${fieldName}:`, error);
+      alert(`Failed to update ${fieldName}. Please check the console for details.`);
+    }
+  }
+
+  cancelFieldEditing(fieldName) {
+    const field = document.getElementById(`${fieldName}-field`);
+    if (!field) return;
+
+    // Hide edit controls and show edit button
+    const editControls = field.querySelector('.edit-controls');
+    const editButton = field.querySelector('.edit-field-btn');
+    
+    editControls.style.display = 'none';
+    editButton.style.display = 'flex';
+
+    // Remove editing classes
+    field.classList.remove('field-editing');
+    
+    // Check if any fields are still being edited
+    const detailView = document.getElementById('detail-view');
+    const stillEditing = detailView.querySelector('.field-editing');
+    if (!stillEditing) {
+      detailView.classList.remove('editing');
+    }
+  }
+
+  cancelAllFieldEditing() {
+    const editingFields = document.querySelectorAll('.field-editing');
+    editingFields.forEach(field => {
+      const fieldName = field.id.replace('-field', '');
+      this.cancelFieldEditing(fieldName);
+    });
+  }
+
+  async browseForField(fieldName) {
+    if (fieldName === 'path') {
+      const path = await ipcRenderer.invoke('select-folder');
+      if (path) {
+        const input = document.getElementById('edit-path-input');
+        input.value = path;
+      }
     }
   }
 

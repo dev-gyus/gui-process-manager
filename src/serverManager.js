@@ -10,6 +10,8 @@ class ServerManager extends EventEmitter {
     this.servers = new Map();
     this.processes = new Map();
     this.logs = new Map();
+    this.healthCheckInterval = null;
+    this.startHealthCheck();
   }
 
   loadServers(serverConfigs) {
@@ -421,16 +423,24 @@ class ServerManager extends EventEmitter {
     const logs = this.logs.get(serverId);
     if (!logs) return;
 
+    // 빈 메시지나 너무 긴 메시지 필터링
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage || trimmedMessage.length > 2000) return;
+
     const logEntry = {
       timestamp: new Date(),
       level,
-      message: message.trim()
+      message: trimmedMessage
     };
 
     logs.push(logEntry);
-    if (logs.length > 1000) {
-      logs.shift();
+    
+    // 로그 크기 제한 - 500개로 줄여서 메모리 사용량 감소
+    if (logs.length > 500) {
+      // 한 번에 100개씩 제거하여 GC 부담 줄이기
+      logs.splice(0, 100);
     }
+    
     this.emit('log-update', serverId, logEntry);
   }
 
@@ -477,20 +487,28 @@ class ServerManager extends EventEmitter {
   async startResourceMonitoring(serverId) {
     const intervalId = `monitor_${serverId}`;
     // 이전 모니터링이 있다면 중지
-    if (this[intervalId]) clearInterval(this[intervalId]);
+    if (this[intervalId]) {
+      clearInterval(this[intervalId]);
+      delete this[intervalId];
+    }
 
     // 초기 리소스 정보 설정
     const server = this.servers.get(serverId);
-    if (server) {
-      server.cpu = '0.0';
-      server.memory = '0';
-      this.emit('server-status-changed', { ...server });
-    }
+    if (!server) return;
+    
+    server.cpu = '0.0';
+    server.memory = '0';
+    this.emit('server-status-changed', { ...server });
+
+    // 에러 카운터 추가
+    let errorCount = 0;
+    const maxErrors = 5;
 
     this[intervalId] = setInterval(async () => {
       const currentServer = this.servers.get(serverId);
       const processInfo = this.processes.get(serverId);
 
+      // 서버가 존재하지 않거나 실행 중이 아니면 모니터링 중지
       if (!currentServer || !processInfo || currentServer.status !== 'running') {
         clearInterval(this[intervalId]);
         delete this[intervalId];
@@ -498,37 +516,75 @@ class ServerManager extends EventEmitter {
       }
 
       try {
-        const processes = await psList();
+        // ps-list 실행 시간 제한 (3초)
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('ps-list timeout')), 3000)
+        );
+        
+        const processes = await Promise.race([psList(), timeoutPromise]);
         
         // 메인 프로세스 찾기
         const mainProcess = processes.find(p => p.pid === processInfo.pid);
         
         if (mainProcess) {
-          // 메인 프로세스가 있으면 자식 프로세스들도 찾기
-          const childProcesses = processes.filter(p => p.ppid === processInfo.pid);
+          // 메인 프로세스가 있으면 자식 프로세스들도 찾기 (최대 10개로 제한)
+          const childProcesses = processes
+            .filter(p => p.ppid === processInfo.pid)
+            .slice(0, 10); // 자식 프로세스 수 제한
           const allRelatedProcesses = [mainProcess, ...childProcesses];
           
-          // 모든 관련 프로세스의 리소스 사용량 합계
-          const totalCpu = allRelatedProcesses.reduce((sum, p) => sum + (p.cpu || 0), 0);
-          const totalMemory = allRelatedProcesses.reduce((sum, p) => sum + (p.memory || 0), 0);
+          // 모든 관련 프로세스의 리소스 사용량 합계 (안전한 계산)
+          const totalCpu = allRelatedProcesses.reduce((sum, p) => {
+            const cpu = parseFloat(p.cpu) || 0;
+            return sum + (isNaN(cpu) ? 0 : cpu);
+          }, 0);
+          
+          const totalMemory = allRelatedProcesses.reduce((sum, p) => {
+            const memory = parseFloat(p.memory) || 0;
+            return sum + (isNaN(memory) ? 0 : memory);
+          }, 0);
 
-          // ps-list의 memory는 이미 MB 단위임
-          const memoryInMB = Math.round(totalMemory);
+          // 안전한 값 설정
+          const memoryInMB = Math.max(0, Math.round(totalMemory));
+          const cpuPercent = Math.max(0, Math.min(totalCpu, 100)).toFixed(1);
 
-          currentServer.cpu = Math.min(totalCpu, 100).toFixed(1);
+          currentServer.cpu = cpuPercent;
           currentServer.memory = memoryInMB;
           
           this.emit('server-status-changed', { 
             ...currentServer,
             uptime: this.calculateUptime(currentServer.startTime)
           });
+          
+          // 성공 시 에러 카운터 리셋
+          errorCount = 0;
         } else {
+          // 프로세스를 찾을 수 없으면 0으로 설정
           currentServer.cpu = '0.0';
           currentServer.memory = '0';
           this.emit('server-status-changed', { ...currentServer });
         }
       } catch (error) {
-        console.error(`ps-list error for ${serverId}:`, error);
+        errorCount++;
+        console.warn(`Resource monitoring error for ${serverId} (${errorCount}/${maxErrors}):`, error.message);
+        
+        // 연속 에러가 너무 많으면 모니터링 중지
+        if (errorCount >= maxErrors) {
+          console.error(`Too many monitoring errors for ${serverId}, stopping monitoring`);
+          clearInterval(this[intervalId]);
+          delete this[intervalId];
+          
+          // 마지막으로 0 값 설정
+          const currentServer = this.servers.get(serverId);
+          if (currentServer) {
+            currentServer.cpu = '0.0';
+            currentServer.memory = '0';
+            this.emit('server-status-changed', { ...currentServer });
+          }
+          return;
+        }
+        
+        // 에러 시에도 안전한 값 설정
         const currentServer = this.servers.get(serverId);
         if (currentServer) {
           currentServer.cpu = '0.0';
@@ -536,11 +592,91 @@ class ServerManager extends EventEmitter {
           this.emit('server-status-changed', { ...currentServer });
         }
       }
-    }, 1000); // 1초마다 갱신
+    }, 2000); // 2초로 변경하여 부하 감소
+  }
+
+  // 헬스 체크 시스템
+  startHealthCheck() {
+    // 30초마다 전체 시스템 상태 점검
+    this.healthCheckInterval = setInterval(async () => {
+      try {
+        await this.performHealthCheck();
+      } catch (error) {
+        console.warn('Health check failed:', error.message);
+      }
+    }, 30000);
+  }
+
+  async performHealthCheck() {
+    let issuesFound = 0;
+    
+    // 실행 중으로 표시된 서버의 프로세스 실제 존재 여부 확인
+    for (const [serverId, server] of this.servers.entries()) {
+      if (server.status === 'running') {
+        const process = this.processes.get(serverId);
+        if (!process || !process.pid) {
+          console.warn(`Server ${serverId} marked as running but no process found`);
+          server.status = 'error';
+          server.error = 'Process lost - health check failed';
+          this.emit('server-status-changed', { ...server });
+          issuesFound++;
+          continue;
+        }
+        
+        // 프로세스가 실제로 존재하는지 확인
+        try {
+          process.kill(0); // 시그널 0은 프로세스 존재 확인용
+        } catch (error) {
+          if (error.code === 'ESRCH') {
+            console.warn(`Process ${process.pid} for server ${serverId} no longer exists`);
+            server.status = 'error';
+            server.error = 'Process terminated unexpectedly';
+            server.pid = null;
+            this.processes.delete(serverId);
+            this.emit('server-status-changed', { ...server });
+            issuesFound++;
+            
+            // 리소스 모니터링도 정리
+            const intervalId = `monitor_${serverId}`;
+            if (this[intervalId]) {
+              clearInterval(this[intervalId]);
+              delete this[intervalId];
+            }
+          }
+        }
+      }
+    }
+
+    // 메모리 사용량 점검 (Node.js 프로세스)
+    const memUsage = process.memoryUsage();
+    const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+    const rss = Math.round(memUsage.rss / 1024 / 1024);
+    
+    // 메모리 사용량이 너무 높으면 경고
+    if (heapUsedMB > 200 || rss > 500) {
+      console.warn(`High memory usage detected - Heap: ${heapUsedMB}MB, RSS: ${rss}MB`);
+      
+      // 강제 가비지 컬렉션 (가능한 경우)
+      if (global.gc) {
+        global.gc();
+      }
+    }
+
+    if (issuesFound === 0) {
+      console.log(`Health check completed - ${this.servers.size} servers, ${this.getRunningServers().length} running`);
+    } else {
+      console.warn(`Health check completed - ${issuesFound} issues found and resolved`);
+    }
   }
 
   cleanup() {
     console.log('Cleaning up ServerManager resources...');
+    
+    // 헬스 체크 중지
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
+    }
     
     // 모든 리소스 모니터링 정리
     Object.keys(this).forEach(key => {

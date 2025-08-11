@@ -69,24 +69,92 @@
                     </button>
                 </div>
                 
-                <!-- Read-only view -->
+                <!-- Individual field editing view -->
                 <div id="detail-view" class="info-grid">
-                    <div class="info-row">
+                    <!-- Editable Name Field -->
+                    <div class="info-row editable-field">
                         <span class="info-label">Name:</span>
-                        <span id="detail-name" class="info-value"></span>
+                        <div class="editable-value" id="name-field">
+                            <span id="detail-name" class="info-value"></span>
+                            <button class="edit-field-btn" data-field="name" title="Edit Name">
+                                <svg viewBox="0 0 24 24"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"/></svg>
+                            </button>
+                            <div class="edit-controls" style="display: none;">
+                                <input type="text" class="field-input" id="edit-name-input" placeholder="Server name">
+                                <button class="save-field-btn" data-field="name" title="Save">
+                                    <svg viewBox="0 0 24 24"><path d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"/></svg>
+                                </button>
+                                <button class="cancel-field-btn" data-field="name" title="Cancel">
+                                    <svg viewBox="0 0 24 24"><path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z"/></svg>
+                                </button>
+                            </div>
+                        </div>
                     </div>
-                    <div class="info-row">
+                    
+                    <!-- Editable Path Field -->
+                    <div class="info-row editable-field">
                         <span class="info-label">Path:</span>
-                        <span id="detail-path" class="info-value"></span>
+                        <div class="editable-value" id="path-field">
+                            <span id="detail-path" class="info-value"></span>
+                            <button class="edit-field-btn" data-field="path" title="Edit Path">
+                                <svg viewBox="0 0 24 24"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"/></svg>
+                            </button>
+                            <div class="edit-controls" style="display: none;">
+                                <div class="input-group">
+                                    <input type="text" class="field-input" id="edit-path-input" readonly placeholder="Select project folder...">
+                                    <button class="browse-btn" data-field="path" title="Browse">📁</button>
+                                </div>
+                                <button class="save-field-btn" data-field="path" title="Save">
+                                    <svg viewBox="0 0 24 24"><path d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"/></svg>
+                                </button>
+                                <button class="cancel-field-btn" data-field="path" title="Cancel">
+                                    <svg viewBox="0 0 24 24"><path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z"/></svg>
+                                </button>
+                            </div>
+                        </div>
                     </div>
-                    <div class="info-row">
+                    
+                    <!-- Editable Command Field -->
+                    <div class="info-row editable-field">
                         <span class="info-label">Command:</span>
-                        <span id="detail-script" class="info-value"></span>
+                        <div class="editable-value" id="command-field">
+                            <span id="detail-script" class="info-value"></span>
+                            <button class="edit-field-btn" data-field="command" title="Edit Command">
+                                <svg viewBox="0 0 24 24"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"/></svg>
+                            </button>
+                            <div class="edit-controls" style="display: none;">
+                                <input type="text" class="field-input" id="edit-command-input" placeholder="e.g., npm start, node index.js">
+                                <button class="save-field-btn" data-field="command" title="Save">
+                                    <svg viewBox="0 0 24 24"><path d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"/></svg>
+                                </button>
+                                <button class="cancel-field-btn" data-field="command" title="Cancel">
+                                    <svg viewBox="0 0 24 24"><path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z"/></svg>
+                                </button>
+                            </div>
+                        </div>
                     </div>
-                    <div class="info-row">
+                    
+                    <!-- Editable Port Field -->
+                    <div class="info-row editable-field">
                         <span class="info-label">Port:</span>
-                        <span id="detail-port" class="info-value"></span>
+                        <div class="editable-value" id="port-field">
+                            <span id="detail-port" class="info-value"></span>
+                            <button class="edit-field-btn" data-field="port" title="Edit Port">
+                                <svg viewBox="0 0 24 24"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"/></svg>
+                            </button>
+                            <div class="edit-controls" style="display: none;">
+                                <input type="number" class="field-input" id="edit-port-input" placeholder="e.g., 3000" min="1000" max="65535">
+                                <button class="save-field-btn" data-field="port" title="Save">
+                                    <svg viewBox="0 0 24 24"><path d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"/></svg>
+                                </button>
+                                <button class="cancel-field-btn" data-field="port" title="Cancel">
+                                    <svg viewBox="0 0 24 24"><path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z"/></svg>
+                                </button>
+                            </div>
+                        </div>
                     </div>
+                    
+                    <!-- Read-only fields -->
                     <div class="info-row">
                         <span class="info-label">PID:</span>
                         <span id="detail-pid" class="info-value"></span>

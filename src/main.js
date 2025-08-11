@@ -558,3 +558,58 @@ process.on('SIGINT', async () => {
     process.exit(0);
   }
 });
+
+// 전역 에러 핸들링 추가
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  
+  // 에러 로깅
+  const fs = require('fs');
+  const path = require('path');
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const logPath = path.join(__dirname, '../../debug.log');
+  
+  const logEntry = `\n[${new Date().toISOString()}] UNCAUGHT EXCEPTION: ${error.message}\n${error.stack}\n`;
+  
+  try {
+    fs.appendFileSync(logPath, logEntry);
+  } catch (writeError) {
+    console.error('Failed to write error log:', writeError);
+  }
+  
+  // graceful shutdown 시도
+  if (manager && !manager.isQuitting) {
+    manager.gracefulShutdown().finally(() => {
+      process.exit(1);
+    });
+  } else {
+    process.exit(1);
+  }
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  
+  // 에러 로깅
+  const fs = require('fs');
+  const path = require('path');
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const logPath = path.join(__dirname, '../../debug.log');
+  
+  const logEntry = `\n[${new Date().toISOString()}] UNHANDLED REJECTION: ${reason}\n`;
+  
+  try {
+    fs.appendFileSync(logPath, logEntry);
+  } catch (writeError) {
+    console.error('Failed to write error log:', writeError);
+  }
+  
+  // 심각한 에러가 아니라면 애플리케이션 계속 실행
+  // 단, 메모리 관련 에러는 재시작 필요
+  if (reason && reason.toString().includes('ENOMEM')) {
+    console.error('Memory error detected, initiating graceful shutdown');
+    if (manager && !manager.isQuitting) {
+      manager.gracefulShutdown();
+    }
+  }
+});
