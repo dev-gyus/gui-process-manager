@@ -64,6 +64,32 @@ class App {
         await this.showSettings();
       } else if (e.target.id === 'add-server-btn') {
         this.showAddServerModal();
+      } else if (e.target.id === 'delete-all-servers-btn') {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Add busy state to prevent multiple clicks
+        const button = e.target;
+        if (button.disabled) {
+          return;
+        }
+        
+        button.disabled = true;
+        button.textContent = 'Deleting...';
+        
+        try {
+          await this.clearAllServers();
+        } catch (error) {
+          console.error('clearAllServers failed:', error);
+        } finally {
+          button.disabled = false;
+          button.innerHTML = `
+            <svg viewBox="0 0 24 24">
+              <path d="M19 4h-3.5l-1-1h-5l-1 1H5v2h14V4zM6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12z"/>
+            </svg>
+            Delete All Servers
+          `;
+        }
       }
     });
     
@@ -220,13 +246,17 @@ class App {
     if (!container) return;
     container.innerHTML = '';
 
-    // Add Server 버튼 항상 표시
+    // Add Server 버튼과 Delete All Server 버튼 항상 표시
     const addServerSection = document.createElement('div');
     addServerSection.className = 'add-server-section';
     addServerSection.innerHTML = `
       <button class="action-button primary" id="add-server-btn">
         <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
         Add Server
+      </button>
+      <button class="action-button danger" id="delete-all-servers-btn">
+        <svg viewBox="0 0 24 24"><path d="M19 4h-3.5l-1-1h-5l-1 1H5v2h14V4zM6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12z"/></svg>
+        Delete All Servers
       </button>
     `;
     container.appendChild(addServerSection);

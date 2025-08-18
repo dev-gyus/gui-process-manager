@@ -661,12 +661,6 @@ class ServerManager extends EventEmitter {
         global.gc();
       }
     }
-
-    if (issuesFound === 0) {
-      console.log(`Health check completed - ${this.servers.size} servers, ${this.getRunningServers().length} running`);
-    } else {
-      console.warn(`Health check completed - ${issuesFound} issues found and resolved`);
-    }
   }
 
   cleanup() {
