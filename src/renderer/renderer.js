@@ -522,7 +522,8 @@ class App {
     document.getElementById('server-name').value = '';
     document.getElementById('server-path').value = '';
     document.getElementById('server-command').value = '';
-    document.getElementById('server-port').value = '';
+    // 기본 포트 값 노출(비워두면 3000으로 저장됨)
+    document.getElementById('server-port').value = '3000';
     document.getElementById('add-server-modal').classList.remove('hidden');
   }
 
@@ -546,7 +547,8 @@ class App {
       name,
       path,
       command,
-      port: port ? parseInt(port) : null
+      // 포트를 입력하지 않으면 3000으로 저장
+      port: port ? parseInt(port) : 3000
     };
 
     try {

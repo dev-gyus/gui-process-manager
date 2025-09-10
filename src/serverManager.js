@@ -1,8 +1,11 @@
-import { spawn } from 'child_process';
+import { spawn, exec } from 'child_process';
 import EventEmitter from 'events';
 import psList from 'ps-list';
 import Store from 'electron-store';
 import path from 'path';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 class ServerManager extends EventEmitter {
   constructor() {
@@ -50,13 +53,21 @@ class ServerManager extends EventEmitter {
       throw new Error(`Server with ID '${serverConfig.id}' already exists`);
     }
     
+    // 기본 포트 처리 (입력하지 않으면 3000)
+    const rawPort = Number(serverConfig.port);
+    const normalizedPort = Number.isInteger(rawPort) && rawPort >= 1000 && rawPort <= 65535 ? rawPort : 3000;
+    const normalizedServer = {
+      ...serverConfig,
+      port: normalizedPort
+    };
+
     // 새 서버 추가
-    manualServers.push(serverConfig);
+    manualServers.push(normalizedServer);
     store.set('manualServers', manualServers);
     
     // 서버 매니저에 추가
-    this.servers.set(serverConfig.id, { ...serverConfig, status: 'stopped', isManual: true });
-    this.logs.set(serverConfig.id, []);
+    this.servers.set(normalizedServer.id, { ...normalizedServer, status: 'stopped', isManual: true });
+    this.logs.set(normalizedServer.id, []);
     
     return { success: true };
   }
@@ -178,9 +189,17 @@ class ServerManager extends EventEmitter {
         const dynamicConfig = store.get('dynamicConfig');
         if (dynamicConfig) {
           dynamicConfig.runCommand = updatedServer.command;
+          // 동적 설정 포트도 동기화
+          const rawPortCfg = Number(updatedServer.port);
+          const normalizedPortCfg = Number.isInteger(rawPortCfg) && rawPortCfg >= 1000 && rawPortCfg <= 65535 ? rawPortCfg : 3000;
+          dynamicConfig.port = normalizedPortCfg;
           store.set('dynamicConfig', dynamicConfig);
         }
       }
+
+      // 포트 보정: 비어있거나 유효하지 않으면 3000
+      const rawPort = Number(updatedServer.port);
+      const normalizedPort = Number.isInteger(rawPort) && rawPort >= 1000 && rawPort <= 65535 ? rawPort : 3000;
 
       // 메모리의 서버 정보 업데이트
       const updatedServerData = {
@@ -188,7 +207,7 @@ class ServerManager extends EventEmitter {
         name: updatedServer.name,
         path: updatedServer.path,
         command: updatedServer.command,
-        port: updatedServer.port,
+        port: normalizedPort,
         status: 'stopped', // 중지된 상태로 설정
         pid: null,
         startTime: null,
@@ -222,14 +241,22 @@ class ServerManager extends EventEmitter {
     try {
       const [command, ...args] = server.command.split(' ');
 
-      const serverProcess = spawn(command, args, {
+      const childEnv = {
+        ...process.env,
+        PATH: process.env.PATH
+      };
+      // PORT 주입: 사용자가 포트를 지정했고 기존 환경에 PORT가 없을 때만 설정
+      if (server.port && !childEnv.PORT) {
+        childEnv.PORT = String(server.port);
+      }
+
+      // exec 래핑: bash -lc 'exec <command>' 로 실행하여 bash PID가 실제 서버 PID로 승계되도록 함
+      const execLine = `exec ${server.command}`;
+      const serverProcess = spawn('/bin/bash', ['-lc', execLine], {
         cwd: server.path,
-        shell: true, // 'npm' 같은 명령어를 직접 실행하기 위해 필요
-        detached: true, // 부모 프로세스와 분리
-        env: {
-          ...process.env,
-          PATH: process.env.PATH
-        }
+        shell: false,
+        detached: true,
+        env: childEnv
       });
 
       this.processes.set(serverId, serverProcess);
@@ -237,9 +264,7 @@ class ServerManager extends EventEmitter {
       serverProcess.stdout.on('data', (data) => {
         const output = data.toString();
         this.addLog(serverId, 'info', output);
-        
-        // 포트 번호 추출
-        this.extractPortFromOutput(serverId, output);
+        // 포트는 로그에서 추출하지 않음 (PID 기반 조회로 동기화)
       });
 
       serverProcess.stderr.on('data', (data) => {
@@ -290,6 +315,9 @@ class ServerManager extends EventEmitter {
       this.addLog(serverId, 'info', `Server starting with command: "${server.command}" (PID: ${serverProcess.pid})`);
 
       await this.startResourceMonitoring(serverId);
+
+      // PID 기반으로 리스닝 포트를 주기적으로 조회해 저장값과 다르면 갱신 (로그 파싱 불사용)
+      this.waitAndSyncPortFromPid(serverId, serverProcess.pid, 8000, 250);
 
       return { success: true };
     } catch (error) {
@@ -459,7 +487,7 @@ class ServerManager extends EventEmitter {
 
   extractPortFromOutput(serverId, output) {
     const server = this.servers.get(serverId);
-    if (!server || server.port) return; // 이미 포트가 설정되어 있으면 건너뛰기
+    if (!server) return;
 
     // 다양한 포트 패턴 매칭
     const portPatterns = [
@@ -476,11 +504,42 @@ class ServerManager extends EventEmitter {
       if (match && match[1]) {
         const port = parseInt(match[1]);
         if (port >= 3000 && port <= 65535) { // 유효한 포트 범위
-          server.port = port;
-          this.emit('server-status-changed', { ...server });
+          // 저장된 값과 다르면 갱신 및 영속화
+          if (server.port !== port) {
+            server.port = port;
+            this.emit('server-status-changed', { ...server });
+            this.persistServerPort(serverId, port).catch(() => {});
+          }
           break;
         }
       }
+    }
+  }
+
+  // 발견된 실제 포트를 스토어에 반영
+  async persistServerPort(serverId, newPort) {
+    try {
+      const server = this.servers.get(serverId);
+      if (!server) return;
+      const store = new Store();
+
+      if (server.isManual) {
+        const manualServers = store.get('manualServers', []);
+        const idx = manualServers.findIndex(s => s.id === serverId);
+        if (idx !== -1) {
+          manualServers[idx] = { ...manualServers[idx], port: newPort };
+          store.set('manualServers', manualServers);
+        }
+      } else {
+        // 동적 서버: dynamicConfig에 포트를 저장(존재 시)
+        const dynamicConfig = store.get('dynamicConfig');
+        if (dynamicConfig) {
+          dynamicConfig.port = newPort;
+          store.set('dynamicConfig', dynamicConfig);
+        }
+      }
+    } catch (_) {
+      // 영속화 실패는 무시 (런타임 동작은 유지)
     }
   }
 
@@ -661,6 +720,140 @@ class ServerManager extends EventEmitter {
         global.gc();
       }
     }
+  }
+
+  // PID(및 자식 포함) 기준으로 실제 리스닝 포트를 찾아 저장값과 다르면 갱신하고, 리스닝 PID도 기록
+  async updatePortFromPid(serverId, pid) {
+    try {
+      const server = this.servers.get(serverId);
+      if (!server || !pid) return;
+      const info = await this.detectListeningPortByPidTree(pid);
+      if (!info || !info.port) return;
+      const { port, pid: listenPid } = info;
+      let changed = false;
+      if (port >= 3000 && port <= 65535 && server.port !== port) {
+        server.port = port;
+        changed = true;
+        await this.persistServerPort(serverId, port);
+      }
+      if (listenPid && server.pid !== listenPid) {
+        server.pid = listenPid;
+        changed = true;
+      }
+      if (changed) this.emit('server-status-changed', { ...server });
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  async detectListeningPortByPidTree(rootPid) {
+    try {
+      // ps-list로 전체 프로세스 스냅샷 획득
+      const processes = await psList();
+      const byParent = new Map();
+      for (const p of processes) {
+        if (!byParent.has(p.ppid)) byParent.set(p.ppid, []);
+        byParent.get(p.ppid).push(p.pid);
+      }
+
+      // DFS로 자식 PID 수집 (최대 30개 제한)
+      const stack = [rootPid];
+      const seen = new Set();
+      const pids = [];
+      while (stack.length && pids.length < 30) {
+        const pid = stack.pop();
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        pids.push(pid);
+        const kids = byParent.get(pid) || [];
+        for (const k of kids) stack.push(k);
+      }
+
+      // lsof로 LISTEN 포트 확인 (여러 PID를 한 번에)
+      const pidCsv = pids.join(',');
+      const { stdout } = await execAsync(`lsof -nP -iTCP -sTCP:LISTEN -p ${pidCsv}`);
+      const lines = stdout.split('\n');
+      // lsof 포맷: COMMAND PID USER ... TCP *:3000 (LISTEN)
+      for (const line of lines) {
+        const m = line.match(/^\S+\s+(\d+)\s+\S+.*TCP\s+[^\s]*:(\d{2,5})\s+\(LISTEN\)/);
+        if (m && m[1] && m[2]) {
+          const foundPid = parseInt(m[1], 10);
+          const port = parseInt(m[2], 10);
+          if (!Number.isNaN(port)) return { port, pid: foundPid };
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // 동일 프로세스 그룹(PGID)의 모든 PID 대상으로 LISTEN 포트를 검색하여 {port, pid} 반환
+  async detectListeningPortByPgid(pgid) {
+    try {
+      const { stdout: psOut } = await execAsync('ps -Ao pid,pgid');
+      const pids = [];
+      for (const line of psOut.split('\n')) {
+        const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+        if (m) {
+          const pid = parseInt(m[1], 10);
+          const g = parseInt(m[2], 10);
+          if (!Number.isNaN(pid) && g === pgid) {
+            pids.push(pid);
+          }
+        }
+      }
+      if (pids.length === 0) return null;
+
+      const pidCsv = pids.join(',');
+      const { stdout } = await execAsync(`lsof -nP -iTCP -sTCP:LISTEN -p ${pidCsv}`);
+      for (const line of stdout.split('\n')) {
+        const m = line.match(/^\S+\s+(\d+)\s+\S+.*TCP\s+[^\s]*:(\d{2,5})\s+\(LISTEN\)/);
+        if (m && m[1] && m[2]) {
+          const listenPid = parseInt(m[1], 10);
+          const port = parseInt(m[2], 10);
+          if (!Number.isNaN(port)) return { port, pid: listenPid };
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // 일정 시간 동안 PID가 리스닝하는 포트를 탐색하며 발견 시 동기화
+  async waitAndSyncPortFromPid(serverId, pid, timeoutMs = 8000, intervalMs = 300) {
+    const start = Date.now();
+    const loop = async () => {
+      if (Date.now() - start > timeoutMs) return;
+      try {
+        // 우선 프로세스 그룹(PGID) 기준 검색 시도 (detached 모드 고려)
+        let info = await this.detectListeningPortByPgid(pid);
+        if (!info) {
+          // 실패 시 PPID 트리 기준으로 보조 검색
+          info = await this.detectListeningPortByPidTree(pid);
+        }
+        if (info && info.port) {
+          const server = this.servers.get(serverId);
+          if (server) {
+            let changed = false;
+            if (server.port !== info.port) {
+              server.port = info.port;
+              await this.persistServerPort(serverId, info.port);
+              changed = true;
+            }
+            if (info.pid && server.pid !== info.pid) {
+              server.pid = info.pid;
+              changed = true;
+            }
+            if (changed) this.emit('server-status-changed', { ...server });
+          }
+          return; // 성공적으로 동기화했으므로 종료
+        }
+      } catch (_) {}
+      setTimeout(loop, intervalMs);
+    };
+    setTimeout(loop, 0);
   }
 
   cleanup() {

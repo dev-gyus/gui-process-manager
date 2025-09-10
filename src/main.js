@@ -98,6 +98,7 @@ class MSAServerManager {
           name: folderName.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
           path: dynamicConfig.rootPath,
           command: dynamicConfig.runCommand || 'npm start',
+          port: dynamicConfig.port || null,
         }];
         this.serverManager.loadServers(servers);
       } catch (error) {
@@ -310,11 +311,56 @@ class MSAServerManager {
       return this.serverManager.getAllServers();
     });
 
-    // 서버 시작
+    // 서버 시작 (포트 점유 확인 및 사용자 확인 포함)
     ipcMain.handle('start-server', async (event, serverId) => {
-      const result = await this.serverManager.startServer(serverId);
-      this.updateTrayIcon();
-      return result;
+      try {
+        // 대상 서버 조회
+        const servers = this.serverManager.getAllServers();
+        const target = servers.find(s => s.id === serverId);
+
+        // 포트가 설정되어 있거나 커맨드에서 유추되면 점유 프로세스 확인
+        const desiredPort = target ? (target.port || this.inferPortFromCommand(target.command)) : null;
+        if (target && desiredPort) {
+          const inUseProc = await this.findProcessUsingPort(desiredPort);
+          if (inUseProc) {
+            const { pid, command } = inUseProc;
+            const { response } = await dialog.showMessageBox(this.window, {
+              type: 'warning',
+              buttons: ['Kill and Start', 'Cancel'],
+              defaultId: 0,
+              cancelId: 1,
+              title: 'Port In Use',
+              message: `Port ${desiredPort} is in use by ${command} (PID ${pid}).`,
+              detail: 'Do you want to terminate it (SIGTERM) and start this server?',
+              noLink: true
+            });
+
+            // 사용자가 취소를 선택한 경우 실행 중단
+            if (response === 1) {
+              return { success: false, error: 'Start canceled: port in use' };
+            }
+
+            // 확인 시 해당 프로세스에 SIGTERM 전송
+            try {
+              process.kill(pid, 'SIGTERM');
+            } catch (e) {
+              // 권한/존재 문제 무시하고 계속 진행 (아래에서 포트 해제 대기)
+            }
+
+            // 포트가 해제될 때까지 대기 (최대 6초)
+            const freed = await this.waitForPortFree(desiredPort, 6000);
+            if (!freed) {
+              return { success: false, error: `Port ${desiredPort} did not free in time` };
+            }
+          }
+        }
+
+        const result = await this.serverManager.startServer(serverId);
+        this.updateTrayIcon();
+        return result;
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
     });
 
     // 서버 중지
@@ -331,11 +377,64 @@ class MSAServerManager {
       return result;
     });
 
-    // 모든 서버 시작
+    // 모든 서버 시작 (각 서버별 포트 점유 확인 및 사용자 확인 포함)
     ipcMain.handle('start-all', async () => {
-      const result = await this.serverManager.startAll();
+      const servers = this.serverManager.getAllServers();
+      const results = [];
+
+      for (const s of servers) {
+        try {
+          // 이미 실행 중이면 건너뜀
+          if (s.status === 'running') {
+            results.push({ id: s.id, success: true, skipped: true, reason: 'already running' });
+            continue;
+          }
+
+          // 포트 점유 확인 및 사용자 확인 (명시된 포트가 없으면 커맨드에서 유추)
+          const desiredPort = s.port || this.inferPortFromCommand(s.command);
+          if (desiredPort) {
+            const inUseProc = await this.findProcessUsingPort(desiredPort);
+            if (inUseProc) {
+              const { pid, command } = inUseProc;
+              const { response } = await dialog.showMessageBox(this.window, {
+                type: 'warning',
+                buttons: ['Kill and Start', 'Skip'],
+                defaultId: 0,
+                cancelId: 1,
+                title: 'Port In Use',
+                message: `Port ${desiredPort} is in use by ${command} (PID ${pid}).`,
+                detail: `Terminate it (SIGTERM) and start "${s.name}"?`,
+                noLink: true
+              });
+
+              if (response === 1) {
+                // 사용자가 Skip 선택
+                results.push({ id: s.id, success: false, skipped: true, reason: 'user skipped (port in use)' });
+                continue;
+              }
+
+              // 확인 시 SIGTERM 전송 후 포트 해제 대기
+              try {
+                process.kill(pid, 'SIGTERM');
+              } catch (_) { /* ignore */ }
+
+              const freed = await this.waitForPortFree(desiredPort, 6000);
+              if (!freed) {
+                results.push({ id: s.id, success: false, error: `Port ${desiredPort} did not free in time` });
+                continue;
+              }
+            }
+          }
+
+          const res = await this.serverManager.startServer(s.id);
+          results.push({ id: s.id, ...res });
+        } catch (err) {
+          results.push({ id: s.id, success: false, error: err.message });
+        }
+      }
+
       this.updateTrayIcon();
-      return result;
+      return results;
     });
 
     // 모든 서버 중지
@@ -436,6 +535,67 @@ class MSAServerManager {
         this.window.webContents.send('log-update', { serverId, log });
       }
     });
+  }
+
+  // 지정 포트 사용 중인 프로세스 탐지 (macOS)
+  async findProcessUsingPort(port) {
+    try {
+      // PID 조회
+      const pidResult = await execAsync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t | head -n1`);
+      const pidStr = (pidResult.stdout || '').trim();
+      if (!pidStr) return null;
+      const pid = parseInt(pidStr, 10);
+      if (!pid || Number.isNaN(pid)) return null;
+
+      // 프로세스 명 조회
+      const cmdResult = await execAsync(`ps -p ${pid} -o comm=`);
+      const command = (cmdResult.stdout || '').trim() || 'unknown';
+      
+      // 자신 프로세스는 제외
+      if (pid === process.pid) return null;
+      return { pid, command };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // 포트가 비워질 때까지 대기
+  async waitForPortFree(port, timeoutMs = 5000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const { stdout } = await execAsync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t | head -n1`);
+        if (!stdout.trim()) return true; // 포트 해제됨
+      } catch (_) {
+        return true; // lsof 실패 시 해제된 것으로 간주
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+    return false;
+  }
+
+  // 커맨드 문자열에서 포트 유추
+  inferPortFromCommand(command = '') {
+    try {
+      if (!command) return null;
+      const patterns = [
+        /PORT\s*=\s*(\d{2,5})/i,
+        /--port(?:=|\s+)(\d{2,5})/i,
+        /-p(?:=|\s+)(\d{2,5})/i,
+        /localhost:(\d{4,5})/i,
+        /:(\d{4,5})/i
+      ];
+      for (const re of patterns) {
+        const m = command.match(re);
+        if (m && m[1]) {
+          const p = parseInt(m[1], 10);
+          if (p >= 3000 && p <= 65535) return p;
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
   }
 
   showNotification(server) {
