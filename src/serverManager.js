@@ -504,8 +504,8 @@ class ServerManager extends EventEmitter {
       if (match && match[1]) {
         const port = parseInt(match[1]);
         if (port >= 3000 && port <= 65535) { // 유효한 포트 범위
-          // 저장된 값과 다르면 갱신 및 영속화
-          if (server.port !== port) {
+          // 입력 포트가 비어있을 때만 자동 갱신
+          if (!server.port) {
             server.port = port;
             this.emit('server-status-changed', { ...server });
             this.persistServerPort(serverId, port).catch(() => {});
@@ -727,11 +727,11 @@ class ServerManager extends EventEmitter {
     try {
       const server = this.servers.get(serverId);
       if (!server || !pid) return;
-      const info = await this.detectListeningPortByPidTree(pid);
+      const info = await this.detectListeningPortByPidTree(pid, server.port, pid);
       if (!info || !info.port) return;
       const { port, pid: listenPid } = info;
       let changed = false;
-      if (port >= 3000 && port <= 65535 && server.port !== port) {
+      if (port >= 3000 && port <= 65535 && !server.port) {
         server.port = port;
         changed = true;
         await this.persistServerPort(serverId, port);
@@ -746,7 +746,32 @@ class ServerManager extends EventEmitter {
     }
   }
 
-  async detectListeningPortByPidTree(rootPid) {
+  selectBestPortCandidate(candidates, preferredPort) {
+    if (!candidates || candidates.length === 0) return null;
+
+    const debugPorts = new Set([9229, 9230, 9239]);
+    const scored = candidates.map(c => {
+      let score = 100;
+      if (preferredPort && c.port === preferredPort) score -= 50; // exact match highest 우선순위
+      if (c.isRoot) score -= 30; // 부모 PID가 소유한 포트 우선
+      if (!debugPorts.has(c.port)) score -= 10; // 디버거 포트보다 일반 포트 우선
+      return { ...c, score };
+    });
+
+    scored.sort((a, b) => {
+      if (a.score !== b.score) return a.score - b.score;
+      if (preferredPort) {
+        const diffA = Math.abs(a.port - preferredPort);
+        const diffB = Math.abs(b.port - preferredPort);
+        if (diffA !== diffB) return diffA - diffB;
+      }
+      return a.port - b.port;
+    });
+
+    return scored[0] || null;
+  }
+
+  async detectListeningPortByPidTree(rootPid, preferredPort, mainPid = null) {
     try {
       // ps-list로 전체 프로세스 스냅샷 획득
       const processes = await psList();
@@ -773,23 +798,30 @@ class ServerManager extends EventEmitter {
       const pidCsv = pids.join(',');
       const { stdout } = await execAsync(`lsof -nP -iTCP -sTCP:LISTEN -p ${pidCsv}`);
       const lines = stdout.split('\n');
+      const matches = [];
       // lsof 포맷: COMMAND PID USER ... TCP *:3000 (LISTEN)
       for (const line of lines) {
         const m = line.match(/^\S+\s+(\d+)\s+\S+.*TCP\s+[^\s]*:(\d{2,5})\s+\(LISTEN\)/);
         if (m && m[1] && m[2]) {
           const foundPid = parseInt(m[1], 10);
           const port = parseInt(m[2], 10);
-          if (!Number.isNaN(port)) return { port, pid: foundPid };
+          if (!Number.isNaN(port)) {
+            matches.push({
+              port,
+              pid: foundPid,
+              isRoot: mainPid ? foundPid === mainPid : foundPid === rootPid
+            });
+          }
         }
       }
-      return null;
+      return this.selectBestPortCandidate(matches, preferredPort);
     } catch (_) {
       return null;
     }
   }
 
   // 동일 프로세스 그룹(PGID)의 모든 PID 대상으로 LISTEN 포트를 검색하여 {port, pid} 반환
-  async detectListeningPortByPgid(pgid) {
+  async detectListeningPortByPgid(pgid, preferredPort, mainPid = null) {
     try {
       const { stdout: psOut } = await execAsync('ps -Ao pid,pgid');
       const pids = [];
@@ -807,48 +839,65 @@ class ServerManager extends EventEmitter {
 
       const pidCsv = pids.join(',');
       const { stdout } = await execAsync(`lsof -nP -iTCP -sTCP:LISTEN -p ${pidCsv}`);
+      const matches = [];
       for (const line of stdout.split('\n')) {
         const m = line.match(/^\S+\s+(\d+)\s+\S+.*TCP\s+[^\s]*:(\d{2,5})\s+\(LISTEN\)/);
         if (m && m[1] && m[2]) {
           const listenPid = parseInt(m[1], 10);
           const port = parseInt(m[2], 10);
-          if (!Number.isNaN(port)) return { port, pid: listenPid };
+          if (!Number.isNaN(port)) {
+            matches.push({
+              port,
+              pid: listenPid,
+              isRoot: mainPid ? listenPid === mainPid : listenPid === pgid
+            });
+          }
         }
       }
-      return null;
+      return this.selectBestPortCandidate(matches, preferredPort);
     } catch (_) {
       return null;
     }
   }
 
-  // 일정 시간 동안 PID가 리스닝하는 포트를 탐색하며 발견 시 동기화
+  // 일정 시간 동안 PID가 리스닝하는 포트를 탐색하며 발견 시 동기화 또는 불일치 알림
   async waitAndSyncPortFromPid(serverId, pid, timeoutMs = 8000, intervalMs = 300) {
     const start = Date.now();
     const loop = async () => {
       if (Date.now() - start > timeoutMs) return;
       try {
+        const server = this.servers.get(serverId);
+        const preferredPort = server ? server.port : null;
         // 우선 프로세스 그룹(PGID) 기준 검색 시도 (detached 모드 고려)
-        let info = await this.detectListeningPortByPgid(pid);
+        let info = await this.detectListeningPortByPgid(pid, preferredPort, pid);
         if (!info) {
           // 실패 시 PPID 트리 기준으로 보조 검색
-          info = await this.detectListeningPortByPidTree(pid);
+          info = await this.detectListeningPortByPidTree(pid, preferredPort, pid);
         }
-        if (info && info.port) {
-          const server = this.servers.get(serverId);
-          if (server) {
+        if (info && info.port && info.port >= 3000 && info.port <= 65535) {
+          const currentServer = this.servers.get(serverId);
+          if (currentServer) {
             let changed = false;
-            if (server.port !== info.port) {
-              server.port = info.port;
-              await this.persistServerPort(serverId, info.port);
+
+            // 리스닝 PID 업데이트
+            if (info.pid && currentServer.pid !== info.pid) {
+              currentServer.pid = info.pid;
               changed = true;
             }
-            if (info.pid && server.pid !== info.pid) {
-              server.pid = info.pid;
+
+            // 포트 동기화: 입력값이 없을 때만 실제 포트를 기록
+            const configuredPort = currentServer.port;
+            const actualPort = info.port;
+
+            if (!configuredPort) {
+              currentServer.port = actualPort;
+              await this.persistServerPort(serverId, actualPort);
               changed = true;
             }
-            if (changed) this.emit('server-status-changed', { ...server });
+
+            if (changed) this.emit('server-status-changed', { ...currentServer });
           }
-          return; // 성공적으로 동기화했으므로 종료
+          return; // 탐지 완료
         }
       } catch (_) {}
       setTimeout(loop, intervalMs);

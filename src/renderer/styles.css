@@ -101,19 +101,50 @@ body {
     align-items: center;
     justify-content: center;
     gap: 6px;
-    padding: 8px 12px;
+    padding: 10px 14px;
     border: none;
     border-radius: 6px;
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    position: relative;
+    overflow: hidden;
+}
+
+.action-button::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    transition: width 0.3s, height 0.3s;
+}
+
+.action-button:active::after {
+    width: 200px;
+    height: 200px;
+}
+
+.action-button:active {
+    transform: scale(0.96);
 }
 
 .action-button svg {
     width: 16px;
     height: 16px;
     fill: currentColor;
+    pointer-events: none;
+    flex-shrink: 0;
+}
+
+.action-button svg * {
     pointer-events: none;
 }
 
@@ -265,33 +296,65 @@ body {
 .edit-field-btn, .save-field-btn, .cancel-field-btn, .browse-btn {
     background: none;
     border: none;
-    padding: 4px;
-    border-radius: 4px;
+    padding: 8px;
+    border-radius: 6px;
     cursor: pointer;
     opacity: 0.6;
-    transition: all 0.2s ease;
+    transition: all 0.15s ease;
     display: flex;
     align-items: center;
     justify-content: center;
+    min-width: 32px;
+    min-height: 32px;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
 }
 
 .edit-field-btn:hover, .save-field-btn:hover, .cancel-field-btn:hover, .browse-btn:hover {
     opacity: 1;
-    background: rgba(0, 122, 255, 0.1);
+    background: rgba(0, 122, 255, 0.15);
+    transform: scale(1.05);
+}
+
+.edit-field-btn:active, .save-field-btn:active, .cancel-field-btn:active, .browse-btn:active {
+    transform: scale(0.92);
+    opacity: 1;
+    background: rgba(0, 122, 255, 0.25);
 }
 
 .edit-field-btn svg, .save-field-btn svg, .cancel-field-btn svg {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     fill: #007AFF;
+    pointer-events: none;
+}
+
+.edit-field-btn svg *, .save-field-btn svg *, .cancel-field-btn svg * {
+    pointer-events: none;
 }
 
 .save-field-btn svg {
     fill: #34C759;
 }
 
+.save-field-btn:hover {
+    background: rgba(52, 199, 89, 0.15);
+}
+
+.save-field-btn:active {
+    background: rgba(52, 199, 89, 0.25);
+}
+
 .cancel-field-btn svg {
     fill: #FF3B30;
+}
+
+.cancel-field-btn:hover {
+    background: rgba(255, 59, 48, 0.15);
+}
+
+.cancel-field-btn:active {
+    background: rgba(255, 59, 48, 0.25);
 }
 
 .edit-controls {

@@ -172,16 +172,30 @@ class App {
       }
     });
 
-    // Individual field editing event delegation
+    // Individual field editing event delegation - using closest() for better click detection
     document.addEventListener('click', async (e) => {
-      if (e.target.classList.contains('edit-field-btn')) {
-        this.startFieldEditing(e.target.dataset.field);
-      } else if (e.target.classList.contains('save-field-btn')) {
-        await this.saveField(e.target.dataset.field);
-      } else if (e.target.classList.contains('cancel-field-btn')) {
-        this.cancelFieldEditing(e.target.dataset.field);
-      } else if (e.target.classList.contains('browse-btn')) {
-        await this.browseForField(e.target.dataset.field);
+      // Find the closest button element (handles clicks on SVG/path inside buttons)
+      const editBtn = e.target.closest('.edit-field-btn');
+      const saveBtn = e.target.closest('.save-field-btn');
+      const cancelBtn = e.target.closest('.cancel-field-btn');
+      const browseBtn = e.target.closest('.browse-btn');
+
+      if (editBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.startFieldEditing(editBtn.dataset.field);
+      } else if (saveBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        await this.saveField(saveBtn.dataset.field);
+      } else if (cancelBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.cancelFieldEditing(cancelBtn.dataset.field);
+      } else if (browseBtn && browseBtn.dataset.field) {
+        e.preventDefault();
+        e.stopPropagation();
+        await this.browseForField(browseBtn.dataset.field);
       }
     });
 
@@ -239,6 +253,7 @@ class App {
         this.showSettings();
       }
     });
+
   }
 
   renderServerList() {
@@ -278,7 +293,9 @@ class App {
       item.innerHTML = `
         <div class="server-status ${status}"></div>
         <div class="server-info">
-          <div class="server-name">${server.name}</div>
+          <div class="server-name">
+            ${server.name}
+          </div>
           <div class="server-details">
             ${server.port ? `<span>Port: ${server.port}</span>` : ''}
             ${status === 'running' ? `<span>• Uptime: ${server.uptime || '0m'}</span>` : ''}

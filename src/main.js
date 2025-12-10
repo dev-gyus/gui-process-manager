@@ -535,6 +535,8 @@ class MSAServerManager {
         this.window.webContents.send('log-update', { serverId, log });
       }
     });
+
+    // 포트 불일치 알림 기능 제거됨
   }
 
   // 지정 포트 사용 중인 프로세스 탐지 (macOS)
