@@ -1,4 +1,5 @@
 const { ipcRenderer } = require("electron");
+const {NOW_SAVING_SPAN} = require("./constants.js");
 
 class App {
   constructor() {
@@ -160,7 +161,6 @@ class App {
     });
 
     // Server detail edit controls (legacy form - now hidden by default)
-    document.getElementById('edit-server-btn')?.addEventListener('click', () => this.startEditingServer());
     document.getElementById('cancel-edit-btn')?.addEventListener('click', () => this.cancelEditingServer());
     document.getElementById('save-edit-btn')?.addEventListener('click', async () => {
       await this.saveServerChanges();
@@ -366,7 +366,7 @@ class App {
     document.getElementById('detail-name').textContent = server.name;
     document.getElementById('detail-path').textContent = server.path;
     document.getElementById('detail-script').textContent = server.command; // Use command
-    document.getElementById('detail-port').textContent = server.port || 'N/A';
+    document.getElementById('detail-actual-port').textContent = server.actualPort ? `${server.actualPort} ⚡` : '-';
     this.updateServerDetail(server);
 
     // Reset to view mode
@@ -400,15 +400,15 @@ class App {
   updateServerDetail(server) {
     if (!this.currentDetailServer || this.currentDetailServer.id !== server.id) return;
     document.getElementById('detail-pid').textContent = server.pid || '-';
-    document.getElementById('detail-port').textContent = server.port || 'N/A';
-    
+    document.getElementById('detail-actual-port').textContent = server.actualPort ? `${server.actualPort} ⚡` : '-';
+
     // Detail 화면에서는 초단위까지 표시
     const detailedUptime = server.startTime ? this.calculateUptimeWithSeconds(server.startTime) : '-';
     document.getElementById('detail-uptime').textContent = detailedUptime;
-    
+
     document.getElementById('detail-cpu').textContent = server.cpu !== null ? `${server.cpu}%` : '-';
     document.getElementById('detail-memory').textContent = server.memory !== null ? `${server.memory}MB` : '-';
-    
+
     // Open Browser 버튼 상태도 업데이트
     const openBrowserBtn = document.getElementById('open-browser-btn');
     if (openBrowserBtn) {
@@ -641,15 +641,11 @@ class App {
 
     // 뷰 모드 숨기고 편집 모드 표시
     document.getElementById('detail-view').classList.add('hidden');
-    document.getElementById('detail-edit-form').classList.remove('hidden');
-    document.getElementById('edit-server-btn').style.display = 'none';
   }
 
   cancelEditingServer() {
     // 편집 모드 숨기고 뷰 모드 표시
     document.getElementById('detail-view').classList.remove('hidden');
-    document.getElementById('detail-edit-form').classList.add('hidden');
-    document.getElementById('edit-server-btn').style.display = 'block';
   }
 
   async saveServerChanges() {
@@ -688,6 +684,7 @@ class App {
           document.getElementById('detail-path').textContent = updatedServerFromList.path;
           document.getElementById('detail-script').textContent = updatedServerFromList.command;
           document.getElementById('detail-port').textContent = updatedServerFromList.port || 'N/A';
+          document.getElementById('detail-actual-port').textContent = updatedServerFromList.actualPort ? `${updatedServerFromList.actualPort} ⚡` : '-';
         }
         
         // 편집 모드 종료
@@ -798,7 +795,7 @@ class App {
       // Save button loading state
       const saveButton = field.querySelector('.save-field-btn');
       const originalSaveHtml = saveButton.innerHTML;
-      saveButton.innerHTML = '<span style="width: 14px; height: 14px; border: 2px solid #34C759; border-top: 2px solid transparent; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block;"></span>';
+      saveButton.innerHTML = NOW_SAVING_SPAN
       saveButton.disabled = true;
 
       const result = await ipcRenderer.invoke('update-server', updatedServer);
@@ -827,6 +824,8 @@ class App {
         
         // Cancel editing
         this.cancelFieldEditing(fieldName);
+        // Button restore
+        this.restoreButtonHtml(saveButton, originalSaveHtml);
       } else {
         alert('Failed to update server: ' + (result.error || 'Unknown error'));
       }
@@ -879,6 +878,13 @@ class App {
   escapeHtml(text = '') {
     const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
     return text.replace(/[&<>"']/g, m => map[m]);
+  }
+
+  restoreButtonHtml(saveButton, originalSaveHtml) {
+    saveButton.innerHTML = originalSaveHtml;
+    if (saveButton.disabled) {
+      saveButton.disabled = false;
+    }
   }
 }
 

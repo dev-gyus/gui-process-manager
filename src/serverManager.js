@@ -727,7 +727,7 @@ class ServerManager extends EventEmitter {
     try {
       const server = this.servers.get(serverId);
       if (!server || !pid) return;
-      const info = await this.detectListeningPortByPidTree(pid, server.port, pid);
+      const info = await this.detectListeningPortByPidTree(pid, pid);
       if (!info || !info.port) return;
       const { port, pid: listenPid } = info;
       let changed = false;
@@ -746,32 +746,41 @@ class ServerManager extends EventEmitter {
     }
   }
 
-  selectBestPortCandidate(candidates, preferredPort) {
+  selectBestPortCandidate(candidates) {
     if (!candidates || candidates.length === 0) return null;
 
     const debugPorts = new Set([9229, 9230, 9239]);
+    const commonServerPorts = new Set([3000, 3001, 4000, 5000, 8000, 8080, 8888, 9000]);
+
     const scored = candidates.map(c => {
       let score = 100;
-      if (preferredPort && c.port === preferredPort) score -= 50; // exact match highest 우선순위
-      if (c.isRoot) score -= 30; // 부모 PID가 소유한 포트 우선
-      if (!debugPorts.has(c.port)) score -= 10; // 디버거 포트보다 일반 포트 우선
+
+      // 1순위: 메인 프로세스가 리스닝하는 포트
+      if (c.isRoot) score -= 40;
+
+      // 2순위: 일반적인 서버 포트 범위 (3000-9000)
+      if (c.port >= 3000 && c.port <= 9000 && !debugPorts.has(c.port)) score -= 30;
+
+      // 3순위: 흔히 사용되는 개발 서버 포트
+      if (commonServerPorts.has(c.port)) score -= 20;
+
+      // 4순위: 디버거 포트는 불이익
+      if (debugPorts.has(c.port)) score += 50;
+
       return { ...c, score };
     });
 
     scored.sort((a, b) => {
       if (a.score !== b.score) return a.score - b.score;
-      if (preferredPort) {
-        const diffA = Math.abs(a.port - preferredPort);
-        const diffB = Math.abs(b.port - preferredPort);
-        if (diffA !== diffB) return diffA - diffB;
-      }
+
+      // 동점이면 낮은 포트 번호 우선 (3000이 8000보다 우선)
       return a.port - b.port;
     });
 
     return scored[0] || null;
   }
 
-  async detectListeningPortByPidTree(rootPid, preferredPort, mainPid = null) {
+  async detectListeningPortByPidTree(rootPid, mainPid = null) {
     try {
       // ps-list로 전체 프로세스 스냅샷 획득
       const processes = await psList();
@@ -814,14 +823,14 @@ class ServerManager extends EventEmitter {
           }
         }
       }
-      return this.selectBestPortCandidate(matches, preferredPort);
+      return this.selectBestPortCandidate(matches);
     } catch (_) {
       return null;
     }
   }
 
   // 동일 프로세스 그룹(PGID)의 모든 PID 대상으로 LISTEN 포트를 검색하여 {port, pid} 반환
-  async detectListeningPortByPgid(pgid, preferredPort, mainPid = null) {
+  async detectListeningPortByPgid(pgid, mainPid = null) {
     try {
       const { stdout: psOut } = await execAsync('ps -Ao pid,pgid');
       const pids = [];
@@ -854,7 +863,7 @@ class ServerManager extends EventEmitter {
           }
         }
       }
-      return this.selectBestPortCandidate(matches, preferredPort);
+      return this.selectBestPortCandidate(matches);
     } catch (_) {
       return null;
     }
@@ -867,12 +876,11 @@ class ServerManager extends EventEmitter {
       if (Date.now() - start > timeoutMs) return;
       try {
         const server = this.servers.get(serverId);
-        const preferredPort = server ? server.port : null;
         // 우선 프로세스 그룹(PGID) 기준 검색 시도 (detached 모드 고려)
-        let info = await this.detectListeningPortByPgid(pid, preferredPort, pid);
+        let info = await this.detectListeningPortByPgid(pid, pid);
         if (!info) {
           // 실패 시 PPID 트리 기준으로 보조 검색
-          info = await this.detectListeningPortByPidTree(pid, preferredPort, pid);
+          info = await this.detectListeningPortByPidTree(pid, pid);
         }
         if (info && info.port && info.port >= 3000 && info.port <= 65535) {
           const currentServer = this.servers.get(serverId);
@@ -885,10 +893,17 @@ class ServerManager extends EventEmitter {
               changed = true;
             }
 
-            // 포트 동기화: 입력값이 없을 때만 실제 포트를 기록
+            // 포트 동기화: 실제 포트는 항상 저장하고, 설정 포트가 없으면 기본값으로 사용
             const configuredPort = currentServer.port;
             const actualPort = info.port;
 
+            // 실제 실행 포트를 actualPort 필드에 저장
+            if (actualPort && currentServer.actualPort !== actualPort) {
+              currentServer.actualPort = actualPort;
+              changed = true;
+            }
+
+            // 설정 포트가 없으면 실제 포트를 기본 포트로 설정
             if (!configuredPort) {
               currentServer.port = actualPort;
               await this.persistServerPort(serverId, actualPort);
