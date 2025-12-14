@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import { fileURLToPath } from "url";
 import ServerManager from "./serverManager.js";
 import Store from "electron-store";
+import net from "net";
 
 import { exec } from "child_process";
 import { promisify } from "util";
@@ -82,6 +83,8 @@ class MSAServerManager {
     this.serverManager = new ServerManager();
     this.store = new Store();
     this.isQuitting = false; // 종료 상태 플래그
+    this.isDialogOpen = false; // native dialog 표시 중 blur-hide 방지
+    this._portToolWarned = false;
 
     // 기본 서버 설정
     this.initializeServers();
@@ -155,6 +158,7 @@ class MSAServerManager {
 
     // 윈도우가 포커스를 잃으면 숨기기
     this.window.on('blur', () => {
+      if (this.isDialogOpen) return;
       this.window.hide();
     });
 
@@ -257,6 +261,268 @@ class MSAServerManager {
     }, 10);
   }
 
+  normalizePortValue(rawPort) {
+    const port = Number(rawPort);
+    if (!Number.isInteger(port)) return null;
+    if (port < 1 || port > 65535) return null;
+    return port;
+  }
+
+  async getLsofCommand() {
+    // Packaged 앱에서 PATH가 최소화되어 lsof를 못 찾는 경우가 있어 절대 경로 우선
+    const candidates = ['/usr/sbin/lsof', '/usr/bin/lsof', 'lsof'];
+    for (const cmd of candidates) {
+      if (cmd === 'lsof') return cmd;
+      try {
+        await fs.access(cmd);
+        return cmd;
+      } catch (_) {
+        // try next
+      }
+    }
+    return 'lsof';
+  }
+
+  async isPortInUse(port) {
+    const normalizedPort = this.normalizePortValue(port);
+    if (!normalizedPort) return false;
+
+    return await new Promise(resolve => {
+      const tester = net.createServer();
+      tester.once('error', (err) => {
+        if (err && err.code === 'EADDRINUSE') return resolve(true);
+        return resolve(false);
+      });
+      tester.once('listening', () => {
+        tester.close(() => resolve(false));
+      });
+      // 127.0.0.1 기준으로 점유 여부 확인(0.0.0.0 리스닝도 대부분 EADDRINUSE로 잡힘)
+      tester.listen({ port: normalizedPort, host: '127.0.0.1', exclusive: true });
+    });
+  }
+
+  async confirmAndFreePort(port, { title, message, detail, confirmLabel = 'Kill and Continue', cancelLabel = 'Cancel' }) {
+    const normalizedPort = this.normalizePortValue(port);
+    if (!normalizedPort) return { freed: true };
+
+    // 먼저 포트 점유 여부를 가볍게 확인
+    const isInUse = await this.isPortInUse(normalizedPort);
+    if (!isInUse) return { freed: true };
+
+    const inUseProc = await this.findProcessUsingPort(normalizedPort);
+    if (!inUseProc) {
+      // 포트는 점유 중인데 PID를 찾지 못한 경우(lsof 미존재/권한/환경 이슈)
+      this.isDialogOpen = true;
+      try {
+        if (this.window && !this.window.isVisible()) this.window.show();
+        if (this.window) this.window.focus();
+
+        await dialog.showMessageBox(this.window, {
+          type: 'warning',
+          buttons: ['OK'],
+          defaultId: 0,
+          title: title || 'Port In Use',
+          message: `Port ${normalizedPort} is in use, but the owning process could not be identified.`,
+          detail: 'Cannot auto-terminate without a PID. Please free the port manually and try again.',
+          noLink: true
+        });
+      } finally {
+        this.isDialogOpen = false;
+      }
+      return { freed: false, error: `Port ${normalizedPort} is in use (PID unknown)` };
+    }
+
+    const { pid, command } = inUseProc;
+    this.isDialogOpen = true;
+    try {
+      if (this.window && !this.window.isVisible()) this.window.show();
+      if (this.window) this.window.focus();
+
+      const { response } = await dialog.showMessageBox(this.window, {
+        type: 'warning',
+        buttons: [confirmLabel, cancelLabel],
+        defaultId: 0,
+        cancelId: 1,
+        title: title || 'Port In Use',
+        message: message || `Port ${normalizedPort} is in use by ${command} (PID ${pid}).`,
+        detail: detail || 'Do you want to terminate it (SIGTERM)?',
+        noLink: true
+      });
+
+      if (response === 1) {
+        return { freed: false, canceled: true, error: 'User canceled' };
+      }
+
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch (_) {
+        // ignore and wait anyway
+      }
+
+      const freed = await this.waitForPortFree(normalizedPort, 6000);
+      if (!freed) {
+        return { freed: false, error: `Port ${normalizedPort} did not free in time` };
+      }
+      return { freed: true };
+    } finally {
+      this.isDialogOpen = false;
+    }
+  }
+
+  async getProcessStartTimeMs(pid) {
+    try {
+      const { stdout } = await execAsync(`ps -p ${pid} -o lstart=`);
+      const str = (stdout || '').trim();
+      if (!str) return null;
+      const ms = Date.parse(str);
+      return Number.isNaN(ms) ? null : ms;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async getProcessCwdByPid(pid) {
+    try {
+      const lsof = await this.getLsofCommand();
+      // lsof -d cwd: 현재 작업 디렉토리
+      const { stdout } = await execAsync(`${lsof} -a -p ${pid} -d cwd -Fn`);
+      // 출력 예: "n/Users/xxx/project"
+      const line = (stdout || '').split('\n').find(l => l.startsWith('n'));
+      if (!line) return null;
+      return line.slice(1).trim() || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async terminateProcessGroupByPid(pid) {
+    try {
+      process.kill(-pid, 'SIGTERM');
+    } catch (e) {
+      if (e.code !== 'ESRCH') {
+        try {
+          process.kill(pid, 'SIGTERM');
+        } catch (_) { /* ignore */ }
+      }
+    }
+
+    const waitStart = Date.now();
+    while (Date.now() - waitStart < 6000) {
+      try {
+        process.kill(pid, 0);
+      } catch (e) {
+        if (e.code === 'ESRCH') return true;
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    // still alive -> SIGKILL
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch (e) {
+      if (e.code !== 'ESRCH') {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch (_) { /* ignore */ }
+      }
+    }
+    return !(await this.isProcessAlive(pid));
+  }
+
+  async isProcessAlive(pid) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return !(e && e.code === 'ESRCH');
+    }
+  }
+
+  async cleanupStaleServerProcessForServer(server, { prompt = true } = {}) {
+    if (!server || !server.id) return;
+    const serverId = server.id;
+    const runtimes = this.store.get('serverRuntimes', {});
+    const rt = runtimes && runtimes[serverId] ? runtimes[serverId] : null;
+    if (!rt || !rt.rootPid) return { ok: true, cleaned: false };
+
+    const pid = Number(rt.rootPid);
+    if (!Number.isInteger(pid)) {
+      delete runtimes[serverId];
+      this.store.set('serverRuntimes', runtimes);
+      return { ok: true, cleaned: true };
+    }
+
+    const alive = await this.isProcessAlive(pid);
+    if (!alive) {
+      delete runtimes[serverId];
+      this.store.set('serverRuntimes', runtimes);
+      return { ok: true, cleaned: true };
+    }
+
+    // PID 재사용 방지: 프로세스 시작 시간이 저장된 startedAt과 크게 다르면 무시
+    const procStart = await this.getProcessStartTimeMs(pid);
+    if (procStart && rt.startedAt && Math.abs(procStart - Number(rt.startedAt)) > 2 * 60 * 1000) {
+      delete runtimes[serverId];
+      this.store.set('serverRuntimes', runtimes);
+      return { ok: true, cleaned: true };
+    }
+
+    // 가능한 경우 cwd로 한 번 더 검증
+    const cwd = await this.getProcessCwdByPid(pid);
+    const expectedPath = rt.path || null;
+    if (expectedPath && cwd && !cwd.startsWith(expectedPath)) {
+      delete runtimes[serverId];
+      this.store.set('serverRuntimes', runtimes);
+      return { ok: true, cleaned: true };
+    }
+
+    const name = server.name || rt.name || serverId;
+
+    if (!prompt) {
+      const terminated = await this.terminateProcessGroupByPid(pid);
+      delete runtimes[serverId];
+      this.store.set('serverRuntimes', runtimes);
+      if (!terminated) return { ok: false, error: `Failed to terminate leftover PID ${pid}` };
+      return { ok: true, cleaned: true };
+    }
+
+    this.isDialogOpen = true;
+    try {
+      if (this.window && !this.window.isVisible()) this.window.show();
+      if (this.window) this.window.focus();
+
+      const { response } = await dialog.showMessageBox(this.window, {
+        type: 'warning',
+        buttons: ['Terminate', 'Continue', 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        title: 'Leftover Server Process Detected',
+        message: `"${name}" appears to still be running from a previous app session.`,
+        detail: `PID: ${pid}${cwd ? `\nCWD: ${cwd}` : ''}\n\nTerminate it before starting?`,
+        noLink: true
+      });
+
+      if (response === 2) {
+        // Cancel: keep runtime record so we can ask again on next start attempt
+        return { ok: false, canceled: true, error: 'Start canceled by user' };
+      }
+
+      if (response === 0) {
+        const terminated = await this.terminateProcessGroupByPid(pid);
+        if (!terminated) {
+          return { ok: false, error: `Failed to terminate leftover PID ${pid}` };
+        }
+      }
+
+      // Continue(1) or Terminate(0) -> clear runtime record to avoid repeated prompts
+      delete runtimes[serverId];
+      this.store.set('serverRuntimes', runtimes);
+      return { ok: true, cleaned: true };
+    } finally {
+      this.isDialogOpen = false;
+    }
+  }
+
   setupIpcHandlers() {
     // 폴더 선택 대화상자
     ipcMain.handle('select-folder', async () => {
@@ -318,39 +584,41 @@ class MSAServerManager {
         const servers = this.serverManager.getAllServers();
         const target = servers.find(s => s.id === serverId);
 
+        if (target) {
+          const staleRes = await this.cleanupStaleServerProcessForServer(target);
+          if (staleRes && staleRes.ok === false) {
+            return { success: false, error: staleRes.error || 'Start canceled' };
+          }
+        }
+
+        // actualPort(마지막 감지 포트)가 있으면 먼저 점유 확인 후 사용자 확인으로 종료
+        if (target && target.actualPort) {
+          const res = await this.confirmAndFreePort(target.actualPort, {
+            title: 'Last Detected Port In Use',
+            message: `Port ${target.actualPort} (last detected actual port) is in use.`,
+            detail: 'This port may be from the previous run. Terminate the process on this port and start the server?',
+            confirmLabel: 'Kill and Start',
+            cancelLabel: 'Cancel'
+          });
+          if (!res.freed) {
+            return { success: false, error: res.error || 'Start canceled: actualPort in use' };
+          }
+        }
+
         // 포트가 설정되어 있거나 커맨드에서 유추되면 점유 프로세스 확인
         const desiredPort = target ? (target.port || this.inferPortFromCommand(target.command)) : null;
         if (target && desiredPort) {
-          const inUseProc = await this.findProcessUsingPort(desiredPort);
-          if (inUseProc) {
-            const { pid, command } = inUseProc;
-            const { response } = await dialog.showMessageBox(this.window, {
-              type: 'warning',
-              buttons: ['Kill and Start', 'Cancel'],
-              defaultId: 0,
-              cancelId: 1,
+          // actualPort 확인에서 이미 처리한 포트면 중복 확인 스킵
+          if (!target.actualPort || this.normalizePortValue(target.actualPort) !== this.normalizePortValue(desiredPort)) {
+            const res = await this.confirmAndFreePort(desiredPort, {
               title: 'Port In Use',
-              message: `Port ${desiredPort} is in use by ${command} (PID ${pid}).`,
+              message: `Port ${desiredPort} is in use.`,
               detail: 'Do you want to terminate it (SIGTERM) and start this server?',
-              noLink: true
+              confirmLabel: 'Kill and Start',
+              cancelLabel: 'Cancel'
             });
-
-            // 사용자가 취소를 선택한 경우 실행 중단
-            if (response === 1) {
-              return { success: false, error: 'Start canceled: port in use' };
-            }
-
-            // 확인 시 해당 프로세스에 SIGTERM 전송
-            try {
-              process.kill(pid, 'SIGTERM');
-            } catch (e) {
-              // 권한/존재 문제 무시하고 계속 진행 (아래에서 포트 해제 대기)
-            }
-
-            // 포트가 해제될 때까지 대기 (최대 6초)
-            const freed = await this.waitForPortFree(desiredPort, 6000);
-            if (!freed) {
-              return { success: false, error: `Port ${desiredPort} did not free in time` };
+            if (!res.freed) {
+              return { success: false, error: res.error || 'Start canceled: port in use' };
             }
           }
         }
@@ -372,9 +640,52 @@ class MSAServerManager {
 
     // 서버 재시작
     ipcMain.handle('restart-server', async (event, serverId) => {
-      const result = await this.serverManager.restartServer(serverId);
-      this.updateTrayIcon();
-      return result;
+      try {
+        const servers = this.serverManager.getAllServers();
+        const target = servers.find(s => s.id === serverId);
+
+        if (target) {
+          const staleRes = await this.cleanupStaleServerProcessForServer(target, { prompt: false });
+          if (staleRes && staleRes.ok === false) {
+            return { success: false, error: staleRes.error || 'Restart canceled' };
+          }
+        }
+
+        if (target && target.actualPort) {
+          const res = await this.confirmAndFreePort(target.actualPort, {
+            title: 'Last Detected Port In Use',
+            message: `Port ${target.actualPort} (last detected actual port) is in use.`,
+            detail: 'This port may be from the previous run. Terminate the process on this port and restart the server?',
+            confirmLabel: 'Kill and Restart',
+            cancelLabel: 'Cancel'
+          });
+          if (!res.freed) {
+            return { success: false, error: res.error || 'Restart canceled: actualPort in use' };
+          }
+        }
+
+        const desiredPort = target ? (target.port || this.inferPortFromCommand(target.command)) : null;
+        if (target && desiredPort) {
+          if (!target.actualPort || this.normalizePortValue(target.actualPort) !== this.normalizePortValue(desiredPort)) {
+            const res = await this.confirmAndFreePort(desiredPort, {
+              title: 'Port In Use',
+              message: `Port ${desiredPort} is in use.`,
+              detail: 'Do you want to terminate it (SIGTERM) and restart this server?',
+              confirmLabel: 'Kill and Restart',
+              cancelLabel: 'Cancel'
+            });
+            if (!res.freed) {
+              return { success: false, error: res.error || 'Restart canceled: port in use' };
+            }
+          }
+        }
+
+        const result = await this.serverManager.restartServer(serverId);
+        this.updateTrayIcon();
+        return result;
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
     });
 
     // 모든 서버 시작 (각 서버별 포트 점유 확인 및 사용자 확인 포함)
@@ -390,37 +701,39 @@ class MSAServerManager {
             continue;
           }
 
+          const staleRes = await this.cleanupStaleServerProcessForServer(s);
+          if (staleRes && staleRes.ok === false) {
+            results.push({ id: s.id, success: false, skipped: true, reason: 'user canceled (leftover process)' });
+            continue;
+          }
+
+          if (s.actualPort) {
+            const res = await this.confirmAndFreePort(s.actualPort, {
+              title: 'Last Detected Port In Use',
+              message: `Port ${s.actualPort} (last detected actual port) is in use.`,
+              detail: `Terminate it (SIGTERM) and start "${s.name}"?`,
+              confirmLabel: 'Kill and Start',
+              cancelLabel: 'Skip'
+            });
+            if (!res.freed) {
+              results.push({ id: s.id, success: false, skipped: true, reason: 'user skipped (actualPort in use)' });
+              continue;
+            }
+          }
+
           // 포트 점유 확인 및 사용자 확인 (명시된 포트가 없으면 커맨드에서 유추)
           const desiredPort = s.port || this.inferPortFromCommand(s.command);
           if (desiredPort) {
-            const inUseProc = await this.findProcessUsingPort(desiredPort);
-            if (inUseProc) {
-              const { pid, command } = inUseProc;
-              const { response } = await dialog.showMessageBox(this.window, {
-                type: 'warning',
-                buttons: ['Kill and Start', 'Skip'],
-                defaultId: 0,
-                cancelId: 1,
+            if (!s.actualPort || this.normalizePortValue(s.actualPort) !== this.normalizePortValue(desiredPort)) {
+              const res = await this.confirmAndFreePort(desiredPort, {
                 title: 'Port In Use',
-                message: `Port ${desiredPort} is in use by ${command} (PID ${pid}).`,
+                message: `Port ${desiredPort} is in use.`,
                 detail: `Terminate it (SIGTERM) and start "${s.name}"?`,
-                noLink: true
+                confirmLabel: 'Kill and Start',
+                cancelLabel: 'Skip'
               });
-
-              if (response === 1) {
-                // 사용자가 Skip 선택
+              if (!res.freed) {
                 results.push({ id: s.id, success: false, skipped: true, reason: 'user skipped (port in use)' });
-                continue;
-              }
-
-              // 확인 시 SIGTERM 전송 후 포트 해제 대기
-              try {
-                process.kill(pid, 'SIGTERM');
-              } catch (_) { /* ignore */ }
-
-              const freed = await this.waitForPortFree(desiredPort, 6000);
-              if (!freed) {
-                results.push({ id: s.id, success: false, error: `Port ${desiredPort} did not free in time` });
                 continue;
               }
             }
@@ -542,8 +855,9 @@ class MSAServerManager {
   // 지정 포트 사용 중인 프로세스 탐지 (macOS)
   async findProcessUsingPort(port) {
     try {
+      const lsof = await this.getLsofCommand();
       // PID 조회
-      const pidResult = await execAsync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t | head -n1`);
+      const pidResult = await execAsync(`${lsof} -nP -iTCP:${port} -sTCP:LISTEN -t | head -n1`);
       const pidStr = (pidResult.stdout || '').trim();
       if (!pidStr) return null;
       const pid = parseInt(pidStr, 10);
@@ -556,7 +870,11 @@ class MSAServerManager {
       // 자신 프로세스는 제외
       if (pid === process.pid) return null;
       return { pid, command };
-    } catch (_) {
+    } catch (err) {
+      if (!this._portToolWarned) {
+        this._portToolWarned = true;
+        console.warn('Port check failed (lsof/ps may be unavailable):', err && err.message ? err.message : err);
+      }
       return null;
     }
   }
@@ -564,9 +882,10 @@ class MSAServerManager {
   // 포트가 비워질 때까지 대기
   async waitForPortFree(port, timeoutMs = 5000) {
     const start = Date.now();
+    const lsof = await this.getLsofCommand();
     while (Date.now() - start < timeoutMs) {
       try {
-        const { stdout } = await execAsync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t | head -n1`);
+        const { stdout } = await execAsync(`${lsof} -nP -iTCP:${port} -sTCP:LISTEN -t | head -n1`);
         if (!stdout.trim()) return true; // 포트 해제됨
       } catch (_) {
         return true; // lsof 실패 시 해제된 것으로 간주
@@ -649,7 +968,7 @@ class MSAServerManager {
         }, 15000);
       });
 
-      // 모든 서버 중지 시작
+      // 모든 서버 중지 시작 (process map이 유실된 경우에도 PID 기반으로 SIGTERM 시도)
       await this.serverManager.stopAll();
       
       // 모든 서버가 실제로 종료될 때까지 대기

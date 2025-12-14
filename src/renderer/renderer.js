@@ -297,7 +297,7 @@ class App {
             ${server.name}
           </div>
           <div class="server-details">
-            ${server.port ? `<span>Port: ${server.port}</span>` : ''}
+            ${server.actualPort ? `<span>Port: ${server.actualPort}</span>` : ''}
             ${status === 'running' ? `<span>• Uptime: ${server.uptime || '0m'}</span>` : ''}
             ${status === 'running' && server.cpu !== null ? `<span>• CPU: ${server.cpu}%</span>` : ''}
             ${status === 'running' && server.memory !== null ? `<span>• Mem: ${server.memory}MB</span>` : ''}
@@ -373,8 +373,8 @@ class App {
     this.cancelEditingServer();
 
     const openBrowserBtn = document.getElementById('open-browser-btn');
-    openBrowserBtn.onclick = () => ipcRenderer.invoke('open-browser', server.port);
-    openBrowserBtn.disabled = !server.port;
+    openBrowserBtn.onclick = () => ipcRenderer.invoke('open-browser', server.actualPort);
+    openBrowserBtn.disabled = !server.actualPort;
 
     document.getElementById('open-terminal-btn').onclick = () => ipcRenderer.invoke('open-terminal', server.path);
 
@@ -412,7 +412,7 @@ class App {
     // Open Browser 버튼 상태도 업데이트
     const openBrowserBtn = document.getElementById('open-browser-btn');
     if (openBrowserBtn) {
-      openBrowserBtn.disabled = !server.port;
+      openBrowserBtn.disabled = !server.actualPort;
     }
   }
 
@@ -539,8 +539,6 @@ class App {
     document.getElementById('server-name').value = '';
     document.getElementById('server-path').value = '';
     document.getElementById('server-command').value = '';
-    // 기본 포트 값 노출(비워두면 3000으로 저장됨)
-    document.getElementById('server-port').value = '3000';
     document.getElementById('add-server-modal').classList.remove('hidden');
   }
 
@@ -552,7 +550,6 @@ class App {
     const name = document.getElementById('server-name').value.trim();
     const path = document.getElementById('server-path').value.trim();
     const command = document.getElementById('server-command').value.trim();
-    const port = document.getElementById('server-port').value.trim();
 
     if (!name || !path || !command) {
       alert('Please fill in all required fields (Name, Path, Command).');
@@ -563,9 +560,7 @@ class App {
       id: name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
       name,
       path,
-      command,
-      // 포트를 입력하지 않으면 3000으로 저장
-      port: port ? parseInt(port) : 3000
+      command
     };
 
     try {
@@ -683,7 +678,6 @@ class App {
           document.getElementById('detail-name').textContent = updatedServerFromList.name;
           document.getElementById('detail-path').textContent = updatedServerFromList.path;
           document.getElementById('detail-script').textContent = updatedServerFromList.command;
-          document.getElementById('detail-port').textContent = updatedServerFromList.port || 'N/A';
           document.getElementById('detail-actual-port').textContent = updatedServerFromList.actualPort ? `${updatedServerFromList.actualPort} ⚡` : '-';
         }
         
