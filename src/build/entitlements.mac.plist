@@ -14,7 +14,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-  <title>MSA Server Manager</title>
+  <title>GUI Process Manager</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -24,7 +24,7 @@
       <svg class="icon" viewBox="0 0 24 24">
         <path d="M4 1h16a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1m0 11h16a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1M6 5h1v1H6V5m0 11h1v1H6v-1z"/>
       </svg>
-      <span>MSA Server Manager</span>
+      <span>GUI Process Manager</span>
     </div>
     <button class="icon-button" id="settings-btn">
       <svg viewBox="0 0 24 24">

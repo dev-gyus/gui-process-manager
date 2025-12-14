@@ -5,6 +5,52 @@ class App {
   constructor() {
     this.servers = [];
     this.currentDetailServer = null;
+    this.statusLockUntil = 0;
+    this.justOpenedModal = null;
+  }
+
+  normalizeStatus(status) {
+    return String(status || '').trim().toLowerCase();
+  }
+
+  isRunningLike(status) {
+    const normalized = this.normalizeStatus(status);
+    return normalized === 'running' || normalized === 'starting' || normalized === 'restarting';
+  }
+
+  setServerLocalStatus(serverId, status) {
+    const index = this.servers.findIndex(s => s.id === serverId);
+    if (index === -1) return;
+    this.servers[index] = { ...this.servers[index], status };
+    this.renderServerList();
+    this.updateStatusBar();
+  }
+
+  forceModalLayout(modal) {
+    if (!modal) return;
+    // In some transparent/framelss Electron windows, overlays outside the main
+    // container can end up with a 0x0 layout rect. Ensure the modal lives under
+    // #app (which has a real size) and force explicit pixel sizing.
+    const appEl = document.getElementById('app');
+    if (appEl && modal.parentElement !== appEl) {
+      appEl.appendChild(modal);
+    }
+
+    const width = appEl?.clientWidth || document.body?.clientWidth || window.innerWidth || 400;
+    const height = appEl?.clientHeight || document.body?.clientHeight || window.innerHeight || 600;
+
+    modal.style.position = 'absolute';
+    modal.style.left = '0';
+    modal.style.top = '0';
+    modal.style.right = 'auto';
+    modal.style.bottom = 'auto';
+    modal.style.width = `${width}px`;
+    modal.style.height = `${height}px`;
+    // Do not set `display` inline; `.modal.hidden { display: none; }` must be able to hide it.
+    modal.style.display = '';
+    modal.style.alignItems = '';
+    modal.style.justifyContent = '';
+    modal.style.zIndex = '';
   }
 
   async init() {
@@ -22,26 +68,95 @@ class App {
       this.renderServerList();
       this.updateStatusBar();
     } catch (error) {
-      console.error('Failed to load servers:', error);
       const statusText = document.getElementById('status-text');
       if(statusText) statusText.textContent = 'Error loading servers.';
     }
   }
 
   setupEventListeners() {
+    const setTempStatus = (text, ttlMs = 2500) => {
+      this.setStatusMessage(text, { ttlMs });
+    };
+
+    const openAddServerDeferred = () => {
+      setTimeout(() => this.showAddServerModal(), 0);
+    };
+
+    const openSettingsDeferred = () => {
+      setTimeout(() => this.showSettings(), 0);
+    };
+
+    // Ensure Add Server works even if click events are unreliable in some environments.
+    document.addEventListener('pointerdown', (e) => {
+      const addServerBtn = e.target.closest('#add-server-btn');
+      if (!addServerBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setTempStatus('Opening Add Server…', 1500);
+      try {
+        openAddServerDeferred();
+      } catch (error) {
+        this.setStatusMessage(`Add Server error: ${error?.message || error}`, { ttlMs: 8000 });
+      }
+    }, true);
+
+    // Ensure Settings works even if click events are unreliable in some environments.
+    document.addEventListener('pointerdown', (e) => {
+      const settingsBtn = e.target.closest('#settings-btn');
+      if (!settingsBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setTempStatus('Opening Settings…', 1500);
+      try {
+        openSettingsDeferred();
+      } catch (error) {
+        this.setStatusMessage(`Settings error: ${error?.message || error}`, { ttlMs: 8000 });
+      }
+    }, true);
+
     // Use only event delegation for ALL buttons to avoid timing issues
     document.addEventListener('click', async (e) => {
-      if (e.target.id === 'start-all-btn') {
-        await ipcRenderer.invoke('start-all');
-      } else if (e.target.id === 'stop-all-btn') {
-        await ipcRenderer.invoke('stop-all');
-      } else if (e.target.id === 'clear-all-btn') {
+      const buttonEl = e.target.closest('button');
+      const buttonId = buttonEl?.id;
+      if (!buttonId) return;
+
+      if (buttonId === 'start-all-btn') {
+        setTempStatus('Starting all servers…', 4000);
+        try {
+          // Optimistic UI: immediately reflect "starting" so buttons react right away.
+          this.servers = this.servers.map(s => (
+            this.isRunningLike(s.status) ? s : { ...s, status: 'starting' }
+          ));
+          this.renderServerList();
+          this.updateStatusBar();
+
+          const results = await ipcRenderer.invoke('start-all');
+          await this.loadServers();
+          const started = Array.isArray(results) ? results.filter(r => r && r.success && !r.skipped).length : 0;
+          const skipped = Array.isArray(results) ? results.filter(r => r && r.skipped).length : 0;
+          const failed = Array.isArray(results) ? results.filter(r => r && r.success === false && !r.skipped).length : 0;
+          setTempStatus(`Start all: started ${started}, skipped ${skipped}, failed ${failed}`, 5000);
+        } catch (error) {
+          setTempStatus('Start all failed.', 6000);
+          // Re-sync from main process state.
+          await this.loadServers();
+        }
+      } else if (buttonId === 'stop-all-btn') {
+        setTempStatus('Stopping all servers…', 4000);
+        try {
+          await ipcRenderer.invoke('stop-all');
+          await this.loadServers();
+          setTempStatus('Stopped all servers.', 3000);
+        } catch (error) {
+          setTempStatus('Stop all failed.', 6000);
+        }
+      } else if (buttonId === 'clear-all-btn') {
         e.preventDefault();
         e.stopPropagation();
         
         // Add busy state to prevent multiple clicks
-        const button = e.target;
-        if (button.disabled) {
+        const button = buttonEl;
+        if (!button || button.disabled) {
           return;
         }
         
@@ -51,7 +166,6 @@ class App {
         try {
           await this.clearAllServers();
         } catch (error) {
-          console.error('clearAllServers failed:', error);
         } finally {
           button.disabled = false;
           button.innerHTML = `
@@ -61,17 +175,19 @@ class App {
             Clear All
           `;
         }
-      } else if (e.target.id === 'settings-btn') {
-        await this.showSettings();
-      } else if (e.target.id === 'add-server-btn') {
-        this.showAddServerModal();
-      } else if (e.target.id === 'delete-all-servers-btn') {
+      } else if (buttonId === 'settings-btn') {
+        setTempStatus('Opening Settings…', 1500);
+        openSettingsDeferred();
+      } else if (buttonId === 'add-server-btn') {
+        setTempStatus('Opening Add Server…', 1500);
+        openAddServerDeferred();
+      } else if (buttonId === 'delete-all-servers-btn') {
         e.preventDefault();
         e.stopPropagation();
         
         // Add busy state to prevent multiple clicks
-        const button = e.target;
-        if (button.disabled) {
+        const button = buttonEl;
+        if (!button || button.disabled) {
           return;
         }
         
@@ -81,7 +197,6 @@ class App {
         try {
           await this.clearAllServers();
         } catch (error) {
-          console.error('clearAllServers failed:', error);
         } finally {
           button.disabled = false;
           button.innerHTML = `
@@ -101,19 +216,31 @@ class App {
     // Server detail modal
     document.getElementById('close-detail')?.addEventListener('click', () => this.hideServerDetail());
     document.getElementById('server-detail')?.addEventListener('click', (e) => {
-      if (e.target.id === 'server-detail') this.hideServerDetail();
+      if (e.target !== e.currentTarget) return;
+      {
+        if (this.justOpenedModal?.id === 'server-detail' && Date.now() - this.justOpenedModal.ts < 400) return;
+        this.hideServerDetail();
+      }
     });
 
     // Settings modal
     document.getElementById('close-settings')?.addEventListener('click', () => this.hideSettings());
     document.getElementById('settings-modal')?.addEventListener('click', (e) => {
-      if (e.target.id === 'settings-modal') this.hideSettings();
+      if (e.target !== e.currentTarget) return;
+      {
+        if (this.justOpenedModal?.id === 'settings-modal' && Date.now() - this.justOpenedModal.ts < 400) return;
+        this.hideSettings();
+      }
     });
 
     // Add Server modal
     document.getElementById('close-add-server')?.addEventListener('click', () => this.hideAddServerModal());
     document.getElementById('add-server-modal')?.addEventListener('click', (e) => {
-      if (e.target.id === 'add-server-modal') this.hideAddServerModal();
+      if (e.target !== e.currentTarget) return;
+      {
+        if (this.justOpenedModal?.id === 'add-server-modal' && Date.now() - this.justOpenedModal.ts < 400) return;
+        this.hideAddServerModal();
+      }
     });
     document.getElementById('browse-server-path-btn')?.addEventListener('click', async () => {
       const path = await ipcRenderer.invoke('select-folder');
@@ -261,15 +388,15 @@ class App {
     if (!container) return;
     container.innerHTML = '';
 
-    // Add Server 버튼과 Delete All Server 버튼 항상 표시
+    // Add Server 버튼과 Delete All Server 버튼 항상 표시 (이벤트 리스너는 setupEventListeners에서 delegation 방식으로 처리)
     const addServerSection = document.createElement('div');
     addServerSection.className = 'add-server-section';
     addServerSection.innerHTML = `
-      <button class="action-button primary" id="add-server-btn">
+      <button type="button" class="action-button primary" id="add-server-btn">
         <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
         Add Server
       </button>
-      <button class="action-button danger" id="delete-all-servers-btn">
+      <button type="button" class="action-button danger" id="delete-all-servers-btn">
         <svg viewBox="0 0 24 24"><path d="M19 4h-3.5l-1-1h-5l-1 1H5v2h14V4zM6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12z"/></svg>
         Delete All Servers
       </button>
@@ -279,17 +406,14 @@ class App {
     if (!this.servers || this.servers.length === 0) {
       const emptyState = document.createElement('div');
       emptyState.className = 'empty-state';
-      emptyState.innerHTML = `
-        <p>No servers configured.</p>
-        <a href="#" id="add-server-btn">Configure Project Folder</a>
-      `;
+      emptyState.innerHTML = `<p>No servers configured.</p>`;
       container.appendChild(emptyState);
     }
 
     this.servers.forEach(server => {
       const item = document.createElement('div');
       item.className = 'server-item';
-      const status = server.status || 'stopped';
+      const status = this.normalizeStatus(server.status) || 'stopped';
       item.innerHTML = `
         <div class="server-status ${status}"></div>
         <div class="server-info">
@@ -350,12 +474,22 @@ class App {
           await this.loadServers();
         }
       } else {
+        if (action === 'start') {
+          this.setServerLocalStatus(serverId, 'starting');
+        } else if (action === 'restart') {
+          this.setServerLocalStatus(serverId, 'restarting');
+        } else if (action === 'stop') {
+          this.setServerLocalStatus(serverId, 'stopped');
+        }
+
         await ipcRenderer.invoke(`${action}-server`, serverId);
       }
     } catch (error) {
-      console.error(`Failed to ${action} server:`, error);
       if (action === 'delete') {
-        alert('Failed to delete server. Please check the console for details.');
+        alert('Failed to delete server.');
+      } else {
+        // Re-sync from main process state on failures.
+        await this.loadServers();
       }
     }
   }
@@ -459,25 +593,59 @@ class App {
   }
 
   updateStatusBar() {
-    const runningCount = this.servers.filter(s => s.status === 'running').length;
+    const runningCount = this.servers.filter(s => this.isRunningLike(s.status)).length;
     const totalCount = this.servers.length;
-    document.getElementById('status-text').textContent = `${runningCount} of ${totalCount} services running`;
-    document.getElementById('start-all-btn').disabled = runningCount === totalCount && totalCount > 0;
-    document.getElementById('stop-all-btn').disabled = runningCount === 0;
+    const startAllBtn = document.getElementById('start-all-btn');
+    const stopAllBtn = document.getElementById('stop-all-btn');
+    if (startAllBtn) startAllBtn.disabled = totalCount === 0 || runningCount === totalCount;
+    if (stopAllBtn) stopAllBtn.disabled = runningCount === 0;
+
+    // Keep buttons responsive even when status text is temporarily locked.
+    if (Date.now() < (this.statusLockUntil || 0)) {
+      return;
+    }
+    const statusText = document.getElementById('status-text');
+    if (statusText) {
+      statusText.textContent = `${runningCount} of ${totalCount} services running`;
+    }
+  }
+
+  setStatusMessage(text, { ttlMs = 2500 } = {}) {
+    const statusText = document.getElementById('status-text');
+    if (!statusText) return;
+    statusText.textContent = text;
+    this.statusLockUntil = Date.now() + ttlMs;
   }
 
   async showSettings() {
-    const config = await ipcRenderer.invoke('get-dynamic-config');
-    document.getElementById('root-path').value = config.rootPath;
-    document.getElementById('run-command').value = config.runCommand;
-    
-    // Node 경로 로드
-    const nodePaths = await ipcRenderer.invoke('get-node-paths');
-    document.getElementById('node-path').value = nodePaths.node || '';
-    document.getElementById('npm-path').value = nodePaths.npm || '';
-    
-    await this.loadPresets();
-    document.getElementById('settings-modal').classList.remove('hidden');
+    try {
+      const modal = document.getElementById('settings-modal');
+      const rootPathEl = document.getElementById('root-path');
+      const runCommandEl = document.getElementById('run-command');
+      const nodePathEl = document.getElementById('node-path');
+      const npmPathEl = document.getElementById('npm-path');
+
+      if (!modal || !rootPathEl || !runCommandEl || !nodePathEl || !npmPathEl) {
+        throw new Error('Settings modal elements not found');
+      }
+
+      const config = await ipcRenderer.invoke('get-dynamic-config');
+      rootPathEl.value = config?.rootPath || '';
+      runCommandEl.value = config?.runCommand || '';
+      
+      // Node 경로 로드
+      const nodePaths = await ipcRenderer.invoke('get-node-paths');
+      nodePathEl.value = nodePaths?.node || '';
+      npmPathEl.value = nodePaths?.npm || '';
+      
+      await this.loadPresets();
+      modal.classList.remove('hidden');
+      this.forceModalLayout(modal);
+      this.justOpenedModal = { id: 'settings-modal', ts: Date.now() };
+      rootPathEl.focus();
+    } catch (error) {
+      this.setStatusMessage('Failed to open Settings modal.', { ttlMs: 6000 });
+    }
   }
 
   hideSettings() {
@@ -536,10 +704,26 @@ class App {
   }
 
   showAddServerModal() {
-    document.getElementById('server-name').value = '';
-    document.getElementById('server-path').value = '';
-    document.getElementById('server-command').value = '';
-    document.getElementById('add-server-modal').classList.remove('hidden');
+    try {
+      const modal = document.getElementById('add-server-modal');
+      const nameInput = document.getElementById('server-name');
+      const pathInput = document.getElementById('server-path');
+      const commandInput = document.getElementById('server-command');
+
+      if (!modal || !nameInput || !pathInput || !commandInput) {
+        throw new Error('Add Server modal elements not found');
+      }
+
+      nameInput.value = '';
+      pathInput.value = '';
+      commandInput.value = '';
+      modal.classList.remove('hidden');
+      this.forceModalLayout(modal);
+      this.justOpenedModal = { id: 'add-server-modal', ts: Date.now() };
+      nameInput.focus();
+    } catch (error) {
+      this.setStatusMessage('Failed to open Add Server modal.', { ttlMs: 6000 });
+    }
   }
 
   hideAddServerModal() {
@@ -568,8 +752,7 @@ class App {
       this.hideAddServerModal();
       await this.loadServers();
     } catch (error) {
-      console.error('Failed to add server:', error);
-      alert('Failed to add server. Please check the console for details.');
+      alert('Failed to add server.');
     }
   }
 
@@ -588,8 +771,7 @@ class App {
         await ipcRenderer.invoke('clear-all-servers');
         await this.loadServers();
       } catch (error) {
-        console.error('Failed to clear all servers:', error);
-        alert('Failed to clear all servers. Please check the console for details.');
+        alert('Failed to clear all servers.');
       }
     }
   }
@@ -617,7 +799,6 @@ class App {
         alert('Could not auto-detect Node.js paths. Please set them manually.');
       }
     } catch (error) {
-      console.error('Failed to detect node paths:', error);
       alert('Failed to detect Node.js paths. Please set them manually.');
     } finally {
       button.disabled = false;
@@ -687,8 +868,7 @@ class App {
         alert('Failed to update server: ' + (result.error || 'Unknown error'));
       }
     } catch (error) {
-      console.error('Failed to update server:', error);
-      alert('Failed to update server. Please check the console for details.');
+      alert('Failed to update server.');
     }
   }
 
@@ -824,8 +1004,7 @@ class App {
         alert('Failed to update server: ' + (result.error || 'Unknown error'));
       }
     } catch (error) {
-      console.error(`Failed to update ${fieldName}:`, error);
-      alert(`Failed to update ${fieldName}. Please check the console for details.`);
+      alert(`Failed to update ${fieldName}.`);
     }
   }
 

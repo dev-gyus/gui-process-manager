@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>MSA Server Manager</title>
+    <title>GUI Process Manager</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,8 +12,13 @@
             <svg class="icon" viewBox="0 0 24 24">
                 <path d="M4 1h16a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1m0 11h16a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1M6 5h1v1H6V5m0 11h1v1H6v-1z"/>
             </svg>
-            <span>MSA Server Manager</span>
+            <span>GUI Process Manager</span>
         </div>
+<!--        <button class="icon-button" id="settings-btn" title="Settings">-->
+<!--            <svg class="icon" viewBox="0 0 24 24">-->
+<!--                <path d="M12,8A4,4 0 0,0 8,12A4,4 0 0,0 12,16A4,4 0 0,0 16,12A4,4 0 0,0 12,8M4.93,12.5C4.9,12.34 4.88,12.17 4.88,12C4.88,11.83 4.9,11.66 4.93,11.5L3.23,10.13C3.08,10 3.04,9.78 3.14,9.6L4.74,6.8C4.84,6.62 5.05,6.55 5.24,6.62L7.24,7.42C7.61,7.13 8,6.88 8.44,6.68L8.74,4.56C8.77,4.36 8.94,4.22 9.14,4.22H14.86C15.06,4.22 15.23,4.36 15.26,4.56L15.56,6.68C16,6.88 16.39,7.13 16.76,7.42L18.76,6.62C18.95,6.55 19.16,6.62 19.26,6.8L20.86,9.6C20.96,9.78 20.92,10 20.77,10.13L19.07,11.5C19.1,11.66 19.12,11.83 19.12,12C19.12,12.17 19.1,12.34 19.07,12.5L20.77,13.87C20.92,14 20.96,14.22 20.86,14.4L19.26,17.2C19.16,17.38 18.95,17.45 18.76,17.38L16.76,16.58C16.39,16.87 16,17.12 15.56,17.32L15.26,19.44C15.23,19.64 15.06,19.78 14.86,19.78H9.14C8.94,19.78 8.77,19.64 8.74,19.44L8.44,17.32C8,17.12 7.61,16.87 7.24,16.58L5.24,17.38C5.05,17.45 4.84,17.38 4.74,17.2L3.14,14.4C3.04,14.22 3.08,14 3.23,13.87L4.93,12.5Z"/>-->
+<!--            </svg>-->
+<!--        </button>-->
     </div>
 
     <div class="quick-actions">
@@ -29,12 +34,12 @@
             </svg>
             Stop All
         </button>
-        <button class="action-button danger" id="clear-all-btn">
-            <svg viewBox="0 0 24 24">
-                <path d="M19 4h-3.5l-1-1h-5l-1 1H5v2h14V4zM6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12z"/>
-            </svg>
-            Clear All
-        </button>
+<!--        <button class="action-button danger" id="clear-all-btn">-->
+<!--            <svg viewBox="0 0 24 24">-->
+<!--                <path d="M19 4h-3.5l-1-1h-5l-1 1H5v2h14V4zM6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12z"/>-->
+<!--            </svg>-->
+<!--            Clear All-->
+<!--        </button>-->
     </div>
 
     <div class="server-list" id="server-list">
@@ -42,7 +47,8 @@
     </div>
 
     <div class="status-bar">
-        <span id="status-text">Loading servers...</span>
+        <span id="status-text" class="status-left">Loading servers...</span>
+        <span class="status-credit">developed by @gyus</span>
     </div>
 </div>
 

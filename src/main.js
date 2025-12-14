@@ -11,6 +11,15 @@ import { promisify } from "util";
 
 const execAsync = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const isDev = process.argv.includes('--dev');
+
+if (isDev) {
+  // Reduce noisy DevTools/Electron security warnings and Chromium console spam during `npm run dev`.
+  process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
+  app.commandLine.appendSwitch('disable-logging');
+  app.commandLine.appendSwitch('log-level', '3');
+}
+const APP_NAME = 'GUI Process Manager';
 
 // 자동 경로 탐지 함수
 async function detectNodePaths() {
@@ -120,7 +129,7 @@ class MSAServerManager {
     const icon = nativeImage.createFromPath(iconPath);
 
     this.tray = new Tray(icon.resize({ width: 16, height: 16 }));
-    this.tray.setToolTip('MSA Server Manager');
+    this.tray.setToolTip(APP_NAME);
 
     // 트레이 클릭 이벤트
     this.tray.on('click', async () => {
@@ -240,7 +249,7 @@ class MSAServerManager {
     const icon = nativeImage.createFromPath(iconPath);
 
     this.tray.setImage(icon.resize({ width: 16, height: 16 }));
-    this.tray.setToolTip(`MSA Server Manager (${runningCount}/${totalCount} running)`);
+    this.tray.setToolTip(`${APP_NAME} (${runningCount}/${totalCount} running)`);
   }
 
   refreshWindowFrame() {

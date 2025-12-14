@@ -1,7 +1,7 @@
 {
   "name": "msa-server-manager",
   "version": "1.0.0",
-  "description": "MSA Server Manager for macOS",
+  "description": "GUI Process Manager for macOS",
   "main": "src/main.js",
   "type": "module",
   "scripts": {
@@ -12,8 +12,13 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "build": {
-    "appId": "com.yourcompany.msa-server-manager",
-    "productName": "MSA Server Manager",
+    "appId": "com.gyus.gui-process-manager",
+    "productName": "GUI Process Manager",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
     "directories": {
       "output": "dist"
     },
@@ -25,9 +30,10 @@
       },
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
-    }
+      "entitlements": "src/build/entitlements.mac.plist",
+      "entitlementsInherit": "src/build/entitlements.mac.plist"
+    },
+    "asar": true
   },
   "author": "Gyus",
   "devDependencies": {
