@@ -13,7 +13,7 @@
   },
   "build": {
     "appId": "com.gyus.gui-process-manager",
-    "productName": "GUI Process Manager",
+    "productName": "GUI-Process-Manager",
     "files": [
       "src/**/*",
       "assets/**/*",
@@ -31,7 +31,14 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "src/build/entitlements.mac.plist",
-      "entitlementsInherit": "src/build/entitlements.mac.plist"
+      "entitlementsInherit": "src/build/entitlements.mac.plist",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64", "x64"]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "asar": true
   },
