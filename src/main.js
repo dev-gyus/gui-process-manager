@@ -10,7 +10,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 
 const execAsync = promisify(exec);
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __dirname = path.join(app.getAppPath(), 'src');
 const isDev = process.argv.includes('--dev');
 
 if (isDev) {
@@ -153,9 +153,10 @@ class MSAServerManager {
       resizable: false,
       transparent: true,
       webPreferences: {
-        nodeIntegration: true,
-        contextIsolation: false,
-        webSecurity: false
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, 'preload.js'),
+        sandbox: false // node-pty 등 네이티브 모듈 사용을 위해 필요
       }
     });
 

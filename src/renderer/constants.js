@@ -1,2 +1,2 @@
-export const EDIT_BUTTON_SVG = '<svg viewBox="0 0 24 24"><path d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"/></svg>'
-export const NOW_SAVING_SPAN = '<span style="width: 14px; height: 14px; border: 2px solid #34C759; border-top: 2px solid transparent; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block;"></span>'
+export const EDIT_BUTTON_SVG = '<svg viewBox="0 0 24 24"><path d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"/></svg>';
+export const NOW_SAVING_SPAN = '<span style="width: 14px; height: 14px; border: 2px solid #34C759; border-top: 2px solid transparent; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block;"></span>';

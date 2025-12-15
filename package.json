@@ -1,7 +1,7 @@
 {
-  "name": "msa-server-manager",
+  "name": "gui-process-manager",
   "version": "1.0.0",
-  "description": "GUI Process Manager for macOS",
+  "description": "GUI Process Manager for macOS - Manage your development servers with ease",
   "main": "src/main.js",
   "type": "module",
   "scripts": {
@@ -35,7 +35,12 @@
     },
     "asar": true
   },
-  "author": "Gyus",
+  "author": "GUI Process Manager Contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dev-gyus/gui-process-manager.git"
+  },
   "devDependencies": {
     "electron": "^37.0.0",
     "electron-builder": "^24.0.0"
