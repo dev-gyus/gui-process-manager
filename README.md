@@ -1,4 +1,5 @@
 ## Process Manager GUI
 
 ### Bug
-1. 앱 종료(아이콘 우클릭 종료)시 실행중인 프로세스 정상 종료 안되는 현상
+1. What is this project?
+  a. GUI로 프로세스를 관리 할 수 있는 프로젝트 입니다.
