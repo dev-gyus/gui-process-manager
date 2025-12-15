@@ -1,5 +1,7 @@
-const { ipcRenderer } = require("electron");
-const {NOW_SAVING_SPAN} = require("./constants.js");
+import { NOW_SAVING_SPAN } from './constants.js';
+
+// Use safe IPC API exposed by preload script
+const ipcRenderer = window.electronAPI;
 
 class App {
   constructor() {
