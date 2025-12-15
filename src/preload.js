@@ -75,8 +75,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       throw new Error(`Invalid IPC channel: ${channel}`);
     }
 
-    // Wrap callback to prevent context leaks
-    const subscription = (event, ...args) => callback(...args);
+    // Keep renderer's existing `(event, payload)` callback shape without
+    // leaking the real Electron event object across the bridge.
+    const subscription = (event, ...args) => {
+      try {
+        callback(undefined, ...args);
+      } catch (error) {
+        // Avoid crashing the preload context if a renderer listener throws.
+        console.error(`Renderer listener error for "${channel}":`, error);
+      }
+    };
     ipcRenderer.on(channel, subscription);
 
     // Return unsubscribe function
