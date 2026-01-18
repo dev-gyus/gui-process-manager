@@ -16,8 +16,13 @@ function normalizePortValue(rawPort) {
 
 function isProbablyNestCommandLine(commandLine) {
   if (!commandLine) return false;
-  return /@nestjs|nestjs|nest-cli|\/nest\.js\b|\bnest\b/i.test(commandLine) ||
-    /\b(dist|build)\/main\.(js|cjs|mjs)\b|\bsrc\/main\.ts\b/i.test(commandLine);
+  // 기존 패턴: @nestjs, nestjs, nest-cli, /nest.js, nest
+  if (/@nestjs|nestjs|nest-cli|\/nest\.js\b|\bnest\b/i.test(commandLine)) return true;
+  // 확장: main.js/main.ts 실행 패턴 (dist/src/main.js, build/main.js 등)
+  if (/\b(dist|build|src)\/(src\/)?main\.(js|cjs|mjs|ts)\b/i.test(commandLine)) return true;
+  // 확장: ts-node로 main.ts 실행
+  if (/ts-node.*main\.ts\b/i.test(commandLine)) return true;
+  return false;
 }
 
 function isProbablyNonNestDevServer(commandLine) {
@@ -941,7 +946,7 @@ class ServerManager extends EventEmitter {
     }
   }
 
-  selectBestPortCandidate(candidates, expectedPort = null) {
+  selectBestPortCandidate(candidates, expectedPort = null, isNestContext = false) {
     if (!candidates || candidates.length === 0) return null;
 
     const normalizedExpectedPort = normalizePortValue(expectedPort);
@@ -977,6 +982,11 @@ class ServerManager extends EventEmitter {
 
       // 4순위: 디버거 포트는 불이익
       if (debugPorts.has(c.port)) score += 50;
+
+      // Nest 컨텍스트에서 HTTP 포트(3000-4999) 강력 우선
+      if (isNestContext && c.port >= 3000 && c.port < 5000) score -= 70;
+      // Nest 컨텍스트에서 마이크로서비스 포트(5000+) 페널티
+      if (isNestContext && c.port >= 5000 && !debugPorts.has(c.port)) score += 30;
 
       return { ...c, score };
     });
@@ -1021,6 +1031,10 @@ class ServerManager extends EventEmitter {
 
   async listListeningPortsByPid(pidCsv) {
     if (!pidCsv) return [];
+    // 요청한 PID 집합 (lsof가 관련 없는 프로세스도 반환하는 경우 대비)
+    const requestedPids = new Set(pidCsv.split(',').map(p => parseInt(p.trim(), 10)).filter(p => !Number.isNaN(p)));
+    // macOS 시스템 프로세스 (AirPlay Receiver 등이 5000 포트 사용)
+    const systemCommands = new Set(['ControlCe', 'ControlCenter', 'AirPlayXP', 'rapportd', 'sharingd']);
     try {
       const { stdout } = await execAsync(`lsof -nP -iTCP -sTCP:LISTEN -p ${pidCsv}`);
       const matches = [];
@@ -1030,6 +1044,10 @@ class ServerManager extends EventEmitter {
         if (!m) continue;
         const command = m[1];
         const listenPid = parseInt(m[2], 10);
+        // 요청한 PID가 아니면 무시 (lsof가 관련 없는 프로세스를 반환하는 경우)
+        if (!requestedPids.has(listenPid)) continue;
+        // macOS 시스템 프로세스 필터링
+        if (systemCommands.has(command)) continue;
         const port = parseInt(m[3], 10);
         if (Number.isNaN(listenPid) || Number.isNaN(port)) continue;
         matches.push({ port, pid: listenPid, command });
@@ -1146,20 +1164,23 @@ class ServerManager extends EventEmitter {
             commandLine: pidToCmd.get(c.pid) || null
           }));
 
-          const info = this.selectBestPortCandidate(enriched, expectedPort);
+          // Nest 컨텍스트 먼저 계산 (selectBestPortCandidate에서 사용)
+          const isNestContext = enriched.some(c => isProbablyNestCommandLine(c.commandLine));
+
+          const info = this.selectBestPortCandidate(enriched, expectedPort, isNestContext);
           if (!info || !info.port) {
             setTimeout(loop, intervalMs);
             return;
           }
 
           const selectedIsNest = isProbablyNestCommandLine(info.commandLine);
-          const isNestContext = selectedIsNest || enriched.some(c => isProbablyNestCommandLine(c.commandLine));
           const hasMultipleCandidates = enriched.length > 1;
           const requiredConsecutive = expectedPort ? 2 : (hasMultipleCandidates ? (selectedIsNest ? 2 : 6) : 2);
 
           const elapsedMs = Date.now() - start;
           const hasLowerPortCandidate = enriched.some(c => c.port >= 3000 && c.port < 5000);
-          const nestWarmupMs = (!expectedPort && isNestContext) ? 1500 : 0;
+          // Nest 컨텍스트에서는 expectedPort 유무와 관계없이 warmup 적용
+          const nestWarmupMs = isNestContext ? 2000 : 0;
           // Nest에서 초기에 다른 포트(예: microservice)가 먼저 LISTEN 되고, HTTP 포트가 나중에 뜨는 경우가 있어
           // warmup 동안은 5000+ 포트를 확정하지 않고 기다림 (3000-4999 후보가 없을 때만)
           if (nestWarmupMs && elapsedMs < nestWarmupMs && !hasLowerPortCandidate && info.port >= 5000) {
